@@ -48,21 +48,27 @@ export function formatArticle(article: KnowledgeArticleContext, maxSteps: number
   if (article.issueDescription) lines.push(`Issue: ${article.issueDescription}`);
   if (article.symptoms.length > 0) lines.push(`Symptoms: ${article.symptoms.join('; ')}`);
   lines.push('Documented procedure:');
-  for (const step of article.steps.slice(0, maxSteps)) {
-    lines.push(`- Step ${step.position}${step.title ? ` — ${step.title}` : ''}: ${step.instruction}`);
-    if (step.expectedResult) lines.push(`  - Expected: ${step.expectedResult}`);
-    if (step.failureResult) lines.push(`  - If it fails: ${step.failureResult}`);
-    if (step.nextStep) lines.push(`  - Then: ${step.nextStep}`);
-    if (step.escalationInstructions) lines.push(`  - Escalate when: ${step.escalationInstructions}`);
-    if (step.requiresAdminApproval) {
-      lines.push('  - NOTE: this step is flagged as requiring explicit administrator approval. Never instruct the agent to perform it; ask them to contact IT instead.');
+  if (article.steps.length > 0) {
+    for (const step of article.steps.slice(0, maxSteps)) {
+      lines.push(`- Step ${step.position}${step.title ? ` — ${step.title}` : ''}: ${step.instruction}`);
+      if (step.expectedResult) lines.push(`  - Expected: ${step.expectedResult}`);
+      if (step.failureResult) lines.push(`  - If it fails: ${step.failureResult}`);
+      if (step.nextStep) lines.push(`  - Then: ${step.nextStep}`);
+      if (step.escalationInstructions) lines.push(`  - Escalate when: ${step.escalationInstructions}`);
+      if (step.requiresAdminApproval) {
+        lines.push('  - NOTE: this step is flagged as requiring explicit administrator approval. Never instruct the agent to perform it; ask them to contact IT instead.');
+      }
+      if (step.isDestructive) {
+        lines.push('  - NOTE: this step is flagged as destructive. Only give it if the agent explicitly asks for it, and warn them about the impact first.');
+      }
     }
-    if (step.isDestructive) {
-      lines.push('  - NOTE: this step is flagged as destructive. Only give it if the agent explicitly asks for it, and warn them about the impact first.');
+    if (article.steps.length > maxSteps) {
+      lines.push(`- (${article.steps.length - maxSteps} further documented steps exist and may be requested later.)`);
     }
-  }
-  if (article.steps.length > maxSteps) {
-    lines.push(`- (${article.steps.length - maxSteps} further documented steps exist and may be requested later.)`);
+  } else if (article.troubleshootingSteps) {
+    lines.push(article.troubleshootingSteps);
+  } else {
+    lines.push('- (No step-by-step procedure is documented for this article.)');
   }
   if (article.expectedResult) lines.push(`Overall expected result: ${article.expectedResult}`);
   if (article.failureResult) lines.push(`If the whole procedure fails: ${article.failureResult}`);
@@ -121,7 +127,7 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
 
   if (input.articles.length > 0) {
     blocks.push(
-      `TROUBLESHOOTING DOCUMENTATION (retrieved for this issue — follow it when it applies)\n${input.articles
+      `TROUBLESHOOTING DOCUMENTATION (retrieved for this issue — this is the authoritative company procedure; base your next step on it whenever it applies)\n${input.articles
         .map((article) => formatArticle(article, input.maxStepsPerArticle))
         .join('\n\n')}`,
     );

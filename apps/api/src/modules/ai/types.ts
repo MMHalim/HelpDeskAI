@@ -219,6 +219,8 @@ export interface KnowledgeArticleContext {
   category: string;
   priority: string;
   issueDescription: string;
+  /** Free-text documented procedure (used when no structured steps exist). */
+  troubleshootingSteps: string;
   symptoms: string[];
   expectedResult: string;
   failureResult: string;
