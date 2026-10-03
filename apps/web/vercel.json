@@ -1,0 +1,20 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm --filter @helpdesk/shared build && pnpm --filter @helpdesk/web build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://helpdesk-ai-api-g9iy.onrender.com/api/:path*"
+    },
+    {
+      "source": "/slack/:path*",
+      "destination": "https://helpdesk-ai-api-g9iy.onrender.com/slack/:path*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
