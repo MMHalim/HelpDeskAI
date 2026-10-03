@@ -1,0 +1,31 @@
+{
+  "name": "helpdesk-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Slack IT Helpdesk Troubleshooting Bot for remote customer-support agents",
+  "engines": {
+    "node": ">=20.11.0",
+    "pnpm": ">=9"
+  },
+  "packageManager": "pnpm@11.6.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter \"@helpdesk/api\" --filter \"@helpdesk/web\" dev",
+    "dev:api": "pnpm --filter @helpdesk/api dev",
+    "dev:web": "pnpm --filter @helpdesk/web dev",
+    "build": "pnpm --filter @helpdesk/shared build && pnpm --filter @helpdesk/api build && pnpm --filter @helpdesk/web build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @helpdesk/api test",
+    "test:watch": "pnpm --filter @helpdesk/api test:watch",
+    "db:generate": "pnpm --filter @helpdesk/api db:generate",
+    "db:migrate": "pnpm --filter @helpdesk/api db:migrate",
+    "db:push": "pnpm --filter @helpdesk/api db:push",
+    "db:seed": "pnpm --filter @helpdesk/api db:seed",
+    "db:studio": "pnpm --filter @helpdesk/api db:studio",
+    "smoke": "pnpm --filter @helpdesk/api smoke",
+    "format": "pnpm -r format",
+    "check": "pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

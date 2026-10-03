@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: helpdesk-ai-api
+    runtime: node
+    plan: starter
+    region: frankfurt
+    rootDir: .
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @helpdesk/shared build && pnpm --filter @helpdesk/api build
+    startCommand: node apps/api/dist/src/index.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_POOL_MODE
+        value: session
+      - key: DATABASE_SSL
+        value: ssl
+      - key: FILE_STORAGE
+        value: local
+      - key: STORAGE_LOCAL_DIR
+        value: ./storage
+      # Paste these in the Render dashboard (marked as secret):
+      - key: DATABASE_URL
+        sync: false
+      - key: CREDENTIAL_ENCRYPTION_KEY
+        sync: false
+      - key: SESSION_PEPPER
+        sync: false
+      - key: PUBLIC_API_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false

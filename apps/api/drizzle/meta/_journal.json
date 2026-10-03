@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1790884697777,
+      "tag": "0000_awesome_agent_zero",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790884698777,
+      "tag": "0001_search_extensions",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791014113222,
+      "tag": "0002_striped_sebastian_shaw",
+      "breakpoints": true
+    }
+  ]
+}

@@ -1,0 +1,1523 @@
+/**
+ * Troubleshooting engine (§2, §3, §4, §5, §7, §18, §27, §28).
+ *
+ * State machine
+ *   waiting     no session for the thread; the bot is silent
+ *   analyze     reaction detected → gather context → retrieve KB → call AI
+ *   reply       post a guarded reply in the thread, persist state + timeline
+ *   resolved    agent confirmed the fix → session closed
+ *   escalated   threshold reached / agent asked for a human → escalation record
+ *
+ * Every turn is idempotent at the Slack-event level and correlated by
+ * `correlationId` so the dashboard can show the full trail.
+ */
+import { and, eq } from 'drizzle-orm';
+import {
+  ESCALATION_PHRASES,
+  RESOLVED_SLACK_MESSAGE,
+  RESOLUTION_PHRASES,
+  type EscalationStatus,
+  type ScreenshotAnalysis,
+  type SessionDto,
+  type SessionStatus,
+  type TroubleshootingState,
+} from '@helpdesk/shared';
+import { db } from '../../db/client.js';
+import {
+  escalations,
+  slackChannels,
+  slackMessages,
+  troubleshootingSessions,
+  type Session,
+  type SlackFileRow,
+  type User,
+} from '../../db/schema.js';
+import { errorMessage } from '../../lib/errors.js';
+import { log } from '../logging/service.js';
+import {
+  fileToDto,
+  isImageFile,
+  persistSlackFile,
+  readSlackFileBytes,
+  saveAnalysis,
+} from '../slack/files.js';
+import {
+  fetchMessage,
+  fetchThreadReplies,
+  getAgentIdentity,
+  getPermalink,
+  postMessage,
+  addReaction,
+  upsertSlackMessage,
+} from '../slack/service.js';
+import { slackCall } from '../slack/client.js';
+import type { SlackFileObject } from '../slack/types.js';
+import { AiRunner } from '../ai/runner.js';
+import { getActiveInstructions } from '../ai/config-service.js';
+import { guardMessage, slackSafeErrorMessage } from '../ai/guard.js';
+import type { AiImage, ScreenshotAnalysisResult, TroubleshootingOption } from '../ai/types.js';
+import { getArticleContexts, getReferenceImages } from '../knowledge/articles.js';
+import { retrieveArticles } from '../knowledge/search.js';
+import {
+  getTroubleshootingConfig,
+  getSlackConfig,
+  isChannelAllowed,
+  isUserAllowed,
+} from '../settings/service.js';
+import { correlationId as newCorrelationId } from '../../lib/ids.js';
+import { redactText } from '../../lib/redact.js';
+import { addTimelineEntry, emptyState, nextSessionCode, normalizeState } from './state.js';
+
+const PROCESSING_REACTION = 'eyes';
+const THREAD_MAX_CHARS = 4000;
+
+export interface StartSessionInput {
+  channelId: string;
+  messageTs: string;
+  /** Existing thread timestamp, when the reaction was added inside a thread. */
+  threadTs?: string | null;
+  agentId: string;
+  eventId: string;
+  correlationId?: string;
+  /** Text of the triggering message (already fetched from Slack). */
+  text?: string;
+  files?: SlackFileObject[];
+  trigger: 'reaction' | 'mention' | 'manual';
+}
+
+export interface EngineResult {
+  sessionId: string | null;
+  sessionCode: string | null;
+  action: 'started' | 'continued' | 'ignored' | 'failed' | 'resolved' | 'escalated';
+  reason?: string;
+  reply?: string;
+  provider?: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Entry points                                                                */
+/* -------------------------------------------------------------------------- */
+
+/** Called when the trigger emoji is added to a message. */
+export async function onTrigger(input: StartSessionInput): Promise<EngineResult> {
+  const correlationId = input.correlationId ?? newCorrelationId();
+
+  if (!(await isChannelAllowed(input.channelId))) {
+    log.info(
+      { category: 'slack', channelId: input.channelId, correlationId },
+      'Ignored trigger from an unconfigured channel',
+    );
+    return { sessionId: null, sessionCode: null, action: 'ignored', reason: 'channel_not_allowed' };
+  }
+  if (!(await isUserAllowed(input.agentId))) {
+    log.info(
+      { category: 'slack', channelId: input.channelId, correlationId },
+      'Ignored trigger from a user outside the allow list',
+    );
+    return { sessionId: null, sessionCode: null, action: 'ignored', reason: 'user_not_allowed' };
+  }
+
+  const message = await fetchTriggerMessage(input);
+  const threadTs = message.threadTs ?? message.ts;
+  const text = input.text ?? message.text ?? '';
+  const files = input.files ?? message.files ?? [];
+
+  // A reaction on a message that is already part of an active thread continues
+  // that thread; a reaction on a fresh top-level message starts a new session.
+  const existing = await findSessionByThread(input.channelId, threadTs);
+  if (existing && isActiveStatus(existing.status) && message.ts !== existing.triggerMessageTs) {
+    return handleAgentMessage({
+      channelId: input.channelId,
+      threadTs,
+      messageTs: message.ts,
+      agentId: input.agentId,
+      text,
+      files,
+      eventId: input.eventId,
+      correlationId,
+    });
+  }
+  if (existing && isActiveStatus(existing.status)) {
+    return {
+      sessionId: existing.id,
+      sessionCode: existing.sessionCode,
+      action: 'ignored',
+      reason: 'session_already_active',
+    };
+  }
+
+  return startSession({ ...input, correlationId, message, threadTs, text, files });
+}
+
+interface TriggerMessage {
+  ts: string;
+  threadTs: string | null;
+  text: string;
+  files: SlackFileObject[];
+  user: string;
+}
+
+async function fetchTriggerMessage(input: StartSessionInput): Promise<TriggerMessage> {
+  const message = await fetchMessage(input.channelId, input.messageTs);
+  if (!message) {
+    throw new Error(`Slack message ${input.messageTs} in ${input.channelId} could not be read`);
+  }
+  return {
+    ts: message.ts,
+    threadTs: message.thread_ts ?? null,
+    text: message.text ?? '',
+    files: (message.files ?? []) as SlackFileObject[],
+    user: message.user ?? input.agentId,
+  };
+}
+
+function isActiveStatus(status: string): boolean {
+  return status === 'in_progress' || status === 'paused';
+}
+
+export async function findSessionByThread(channelId: string, threadTs: string): Promise<Session | null> {
+  const rows = await db
+    .select()
+    .from(troubleshootingSessions)
+    .where(
+      and(
+        eq(troubleshootingSessions.channelId, channelId),
+        eq(troubleshootingSessions.threadTs, threadTs),
+      ),
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Start                                                                       */
+/* -------------------------------------------------------------------------- */
+
+async function startSession(input: {
+  channelId: string;
+  agentId: string;
+  eventId: string;
+  correlationId: string;
+  message: TriggerMessage;
+  threadTs: string;
+  text: string;
+  files: SlackFileObject[];
+  trigger: StartSessionInput['trigger'];
+}): Promise<EngineResult> {
+  const config = await getTroubleshootingConfig();
+  const slackConfig = await getSlackConfig();
+  const identity = await getAgentIdentity(input.agentId);
+  const agentName = identity.displayName || identity.realName || identity.name || input.agentId;
+  const safeText = slackConfig.redactSecrets ? redactText(input.text) : input.text;
+
+  const [session] = await db
+    .insert(troubleshootingSessions)
+    .values({
+      sessionCode: await nextSessionCode(),
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      triggerMessageTs: input.message.ts,
+      triggerEventId: input.eventId,
+      slackUserId: input.agentId,
+      agentName: identity.name,
+      agentDisplayName: agentName,
+      originalMessage: safeText,
+      issueTitle: safeText.slice(0, 140) || 'Pending analysis',
+      state: emptyState(),
+    })
+    .returning();
+
+  if (!session) throw new Error('Failed to create the troubleshooting session');
+
+  await db
+    .update(slackChannels)
+    .set({ lastTriggeredAt: new Date() })
+    .where(eq(slackChannels.channelId, input.channelId))
+    .catch(() => undefined);
+
+  await upsertSlackMessage({
+    channelId: input.channelId,
+    ts: input.message.ts,
+    threadTs: input.threadTs,
+    text: safeText,
+    userId: input.agentId,
+    userName: identity.name,
+    hasFiles: input.files.length > 0,
+    sessionId: session.id,
+    raw: { trigger: input.trigger },
+  });
+
+  await addTimelineEntry({
+    sessionId: session.id,
+    role: 'agent',
+    kind: 'trigger',
+    summary: `Agent reported an issue via ${input.trigger === 'mention' ? '@mention' : '🔧 reaction'}`,
+    content: safeText,
+    slackMessageTs: input.message.ts,
+    slackUserName: agentName,
+  });
+
+  void addReaction(input.channelId, input.message.ts, PROCESSING_REACTION).catch(() => undefined);
+  void getPermalink(input.channelId, input.message.ts).then((permalink) => {
+    if (permalink) {
+      void db
+        .update(troubleshootingSessions)
+        .set({ permalink })
+        .where(eq(troubleshootingSessions.id, session.id));
+    }
+  });
+
+  log.info(
+    {
+      category: 'troubleshooting',
+      sessionId: session.id,
+      sessionCode: session.sessionCode,
+      channelId: input.channelId,
+      correlationId: input.correlationId,
+    },
+    'Troubleshooting session started',
+  );
+
+  return runTurn({
+    session,
+    agentMessage: safeText,
+    messageTs: input.message.ts,
+    files: input.files,
+    isFirstTurn: true,
+    actorId: input.agentId,
+    correlationId: input.correlationId,
+    config,
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Continue                                                                    */
+/* -------------------------------------------------------------------------- */
+
+export interface AgentMessageInput {
+  channelId: string;
+  threadTs: string;
+  messageTs: string;
+  agentId: string;
+  text: string;
+  files: SlackFileObject[];
+  eventId: string;
+  correlationId?: string;
+}
+
+/** Called for every agent reply inside an existing troubleshooting thread. */
+export async function handleAgentMessage(input: AgentMessageInput): Promise<EngineResult> {
+  const correlationId = input.correlationId ?? newCorrelationId();
+  const session = await findSessionByThread(input.channelId, input.threadTs);
+
+  if (!session) {
+    log.info(
+      { category: 'troubleshooting', channelId: input.channelId, threadTs: input.threadTs },
+      'Agent reply in a thread with no active session — ignored',
+    );
+    return { sessionId: null, sessionCode: null, action: 'ignored', reason: 'no_session' };
+  }
+
+  const slackConfig = await getSlackConfig();
+  const config = await getTroubleshootingConfig();
+  const identity = await getAgentIdentity(input.agentId);
+  const agentName = identity.displayName || identity.realName || identity.name || input.agentId;
+  const safeText = slackConfig.redactSecrets ? redactText(input.text) : input.text;
+
+  await upsertSlackMessage({
+    channelId: input.channelId,
+    ts: input.messageTs,
+    threadTs: input.threadTs,
+    text: safeText,
+    userId: input.agentId,
+    userName: identity.name,
+    hasFiles: input.files.length > 0,
+    sessionId: session.id,
+  });
+
+  await addTimelineEntry({
+    sessionId: session.id,
+    role: 'agent',
+    kind: 'agent_reply',
+    summary: summarizeAgentReply(safeText),
+    content: safeText,
+    slackMessageTs: input.messageTs,
+    slackUserName: agentName,
+  });
+
+  if (session.adminPaused || session.status === 'paused') {
+    await postMessage({
+      channel: input.channelId,
+      threadTs: input.threadTs,
+      text: `${slackMention(input.agentId)} :pause_button: Troubleshooting for this thread is paused by an administrator. Your message has been recorded and the AI will pick it up when the session is resumed.`.trim(),
+      correlationId,
+      sessionId: session.id,
+    });
+    return { sessionId: session.id, sessionCode: session.sessionCode, action: 'ignored', reason: 'paused' };
+  }
+
+  if (session.status === 'resolved' || session.status === 'closed' || session.status === 'escalated') {
+    // Still listening for an explicit "it is fixed" so an escalated session can
+    // be closed out by the agent, but never start new troubleshooting.
+    if (session.status === 'escalated' && mentionsResolution(safeText)) {
+      await resolveSession({ session, actor: 'agent', correlationId });
+      return { sessionId: session.id, sessionCode: session.sessionCode, action: 'resolved' };
+    }
+    log.info(
+      { category: 'troubleshooting', sessionCode: session.sessionCode },
+      'Reply received on a closed session — recorded without a reply',
+    );
+    return {
+      sessionId: session.id,
+      sessionCode: session.sessionCode,
+      action: 'ignored',
+      reason: `session_${session.status}`,
+    };
+  }
+
+  return runTurn({
+    session,
+    agentMessage: safeText,
+    messageTs: input.messageTs,
+    files: input.files,
+    isFirstTurn: false,
+    actorId: input.agentId,
+    correlationId,
+    config,
+  });
+}
+
+function summarizeAgentReply(text: string): string {
+  const trimmed = text.replace(/\s+/g, ' ').trim();
+  return trimmed.length > 160 ? `${trimmed.slice(0, 157)}…` : trimmed || 'Agent replied (no text)';
+}
+
+function mentionsResolution(text: string): boolean {
+  const lower = text.toLowerCase();
+  return RESOLUTION_PHRASES.some((phrase) => lower.includes(phrase));
+}
+
+function mentionsEscalation(text: string): boolean {
+  const lower = text.toLowerCase();
+  return ESCALATION_PHRASES.some((phrase) => lower.includes(phrase));
+}
+
+/* -------------------------------------------------------------------------- */
+/* The turn                                                                    */
+/* -------------------------------------------------------------------------- */
+
+interface TurnInput {
+  session: Session;
+  agentMessage: string;
+  messageTs: string;
+  files: SlackFileObject[];
+  isFirstTurn: boolean;
+  /** Slack user id whose message triggered this turn — @mentioned in the reply. */
+  actorId: string;
+  correlationId: string;
+  config: Awaited<ReturnType<typeof getTroubleshootingConfig>>;
+}
+
+async function runTurn(input: TurnInput): Promise<EngineResult> {
+  const { session, correlationId, config } = input;
+  const channelId = session.channelId;
+  const threadTs = session.threadTs;
+  const attemptCount = session.attemptCount + 1;
+
+  try {
+    const agentName = session.agentDisplayName || session.agentName || session.slackUserId;
+    const state = normalizeState(session.state);
+
+    // 1. Persist and prepare the screenshots of this message.
+    const screenshotRows = await persistAttachments({
+      session,
+      messageTs: input.messageTs,
+      files: input.files,
+      maxBytes: config.maxAttachmentBytes,
+      maxScreenshots: config.maxScreenshotsPerMessage,
+      correlationId,
+    });
+
+    // 2. Thread transcript (bounded) for continuity.
+    const transcript = await buildTranscript(channelId, threadTs, session.id);
+
+    // 3. AI instructions + runner.
+    const instructions = await getActiveInstructions();
+    const runner = await AiRunner.create({
+      correlationId,
+      sessionId: session.id,
+      sessionCode: session.sessionCode,
+      channelId,
+      threadTs,
+      slackUserId: session.slackUserId,
+      agentName,
+      instructions,
+      maxStepsPerArticle: config.kbMaxSteps,
+      escalationInfoItems: config.escalationInfoItems,
+    });
+
+    // 4. Classify the issue (cheap, JSON only).
+    const classificationOutcome = await runner
+      .run('classifyIssue', (provider) =>
+        provider.classifyIssue({
+          messageText: input.agentMessage,
+          threadContext: transcript.slice(-1500),
+        }),
+      )
+      .catch((error: unknown) => {
+        log.warn({ category: 'ai', error: errorMessage(error), correlationId }, 'Classification failed');
+        return null;
+      });
+    const classification = classificationOutcome?.result ?? null;
+
+    // 5. Retrieve only the relevant documentation (§17).
+    const retrieval = await retrieveArticles({
+      text: [input.agentMessage, classification?.summary ?? '', ...classification?.keywords ?? []].join(' '),
+      keywords: classification?.keywords,
+      category: classification?.category ?? null,
+      limit: config.kbMaxArticles,
+    }).catch((error: unknown) => {
+      log.error({ category: 'knowledge', error, correlationId }, 'Knowledge retrieval failed');
+      return { articles: [], terms: [], usedVectorSearch: false };
+    });
+
+    const articleIds = dedupe([
+      ...(session.pinnedArticleId ? [session.pinnedArticleId] : []),
+      ...retrieval.articles.map((article) => article.id),
+    ]).slice(0, config.kbMaxArticles + 1);
+
+    const articles = await getArticleContexts(articleIds, config.kbMaxSteps);
+
+    // 6. Understand the screenshots (§7) and match documented ones (§27).
+    const screenshotAnalyses = await analyzeScreenshots({
+      runner,
+      session,
+      files: screenshotRows,
+      articleIds,
+      context: [input.agentMessage, classification?.summary ?? ''].filter(Boolean).join('\n'),
+      maxScreenshots: config.maxScreenshotsPerMessage,
+    });
+
+    // The agent may refer to an attachment that never reached the bot (Slack
+    // sometimes omits files from the event). Tell the model so it asks for a
+    // re-upload instead of silently ignoring the reference.
+    if (
+      screenshotAnalyses.length === 0 &&
+      /\b(attach(?:ed|ment)?|screenshot|screen\s?shot|image|picture|photo|snip(?:ping)?)\b/i.test(
+        input.agentMessage,
+      )
+    ) {
+      screenshotAnalyses.push({
+        summary: 'The agent referred to an attachment or screenshot, but no image file reached the bot.',
+        readable: false,
+        unreadableReason: 'No image file was included in the message event.',
+        application: null,
+        osHint: null,
+        errorCodes: [],
+        errorMessages: [],
+        uiState: null,
+        matches: [],
+        confidence: 0,
+        notes: [
+          'Ask the agent to re-upload the screenshot (PNG or JPG) or paste the exact error text.',
+        ],
+      });
+    }
+
+    await addTimelineEntry({
+      sessionId: session.id,
+      role: 'system',
+      kind: 'analysis',
+      summary: retrieval.articles.length
+        ? `Retrieved ${retrieval.articles.length} knowledge-base article(s): ${retrieval.articles
+            .map((article) => article.title)
+            .join(', ')}`
+        : 'No matching knowledge-base article found',
+      content: [
+        classification ? `Classification: ${classification.summary} (${classification.category})` : '',
+        `Keywords: ${retrieval.terms.join(', ') || '(none)'}`,
+        ...screenshotAnalyses.map(
+          (analysis) =>
+            `Screenshot: ${analysis.summary}${analysis.readable ? '' : ` [unreadable: ${analysis.unreadableReason}]`}${
+              analysis.matches.length
+                ? ` [matches: ${analysis.matches.map((m) => `${m.label} ${Math.round(m.confidence * 100)}%`).join(', ')}]`
+                : ''
+            }`,
+        ),
+      ]
+        .filter(Boolean)
+        .join('\n'),
+      articleIds,
+      metadata: {
+        classification,
+        terms: retrieval.terms,
+        articles: retrieval.articles.map((article) => ({
+          id: article.id,
+          title: article.title,
+          score: article.searchScore,
+        })),
+        screenshots: screenshotAnalyses.map((analysis) => ({
+          readable: analysis.readable,
+          errorMessages: analysis.errorMessages,
+        })),
+      },
+    });
+
+    // 7. Understand the agent's answer to the previous step (§3).
+    const messageAnalysis = input.isFirstTurn
+      ? null
+      : await runner
+          .run('analyzeMessage', (provider) =>
+            provider.analyzeMessage({
+              messageText: input.agentMessage,
+              state,
+              threadTranscript: transcript.slice(-2000),
+              attemptCount,
+              maxAttempts: config.maxAttempts,
+            }),
+          )
+          .then((outcome) => outcome.result)
+          .catch((error: unknown) => {
+            log.warn({ category: 'ai', error: errorMessage(error), correlationId }, 'Message analysis failed');
+            return null;
+          });
+
+    // 8. Resolution detection: cheap phrase gate, then the model (§4).
+    let resolutionDetected = false;
+    if (!input.isFirstTurn) {
+      resolutionDetected = await detectResolution({
+        runner,
+        message: input.agentMessage,
+        state,
+        transcript,
+        messageAnalysis,
+      });
+    }
+
+    // 9. Escalation decision (§5).
+    const escalation = await decideEscalation({
+      runner,
+      session,
+      attemptCount,
+      maxAttempts: config.maxAttempts,
+      state,
+      message: input.agentMessage,
+      messageAnalysis,
+    });
+
+    // 10. Produce the reply.
+    const images: AiImage[] = await loadImages(screenshotRows, config.maxScreenshotsPerMessage);
+    const outcome = await runner.run('generateTroubleshootingResponse', (provider) =>
+      provider.generateTroubleshootingResponse({
+        agentMessage: input.agentMessage,
+        state,
+        attemptCount,
+        maxAttempts: config.maxAttempts,
+        threadTranscript: transcript.slice(-2000),
+        articles,
+        screenshotAnalyses,
+        images,
+        sessionCode: session.sessionCode,
+        agentName,
+        knowledgeBaseEmpty: articles.length === 0,
+        adminDirection: null,
+      }),
+    );
+
+    const generated = outcome.result;
+    resolutionDetected = resolutionDetected || generated.resolutionDetected;
+    const escalationDetected = escalation.escalate || generated.escalationDetected;
+    const nextState: TroubleshootingState = {
+      ...generated.state,
+      escalationRequired: escalationDetected || escalation.escalate,
+      resolutionStatus: resolutionDetected
+        ? 'resolved'
+        : escalationDetected
+          ? 'escalated'
+          : 'in_progress',
+    };
+
+    // 11. Guard the reply before it reaches Slack (§19, §23).
+    let replyText = generated.reply;
+    if (resolutionDetected) replyText = RESOLVED_SLACK_MESSAGE;
+    if (escalationDetected && !resolutionDetected) replyText = buildEscalationReply(generated.escalationReason ?? escalation.reason, config.escalationInfoItems, config.escalationContact);
+    const guard = guardMessage(replyText);
+
+    // Always greet the person who wrote the message (§5).
+    const mention = slackMention(input.actorId);
+    const finalText = mention ? `${mention} ${guard.text}` : guard.text;
+
+    // Clarifying questions can be answered with one click (§5, quick replies).
+    const replyBlocks =
+      resolutionDetected || escalationDetected
+        ? undefined
+        : buildReplyBlocks(finalText, generated.options);
+
+    const slackTs = await postMessage({
+      channel: channelId,
+      threadTs,
+      text: finalText,
+      blocks: replyBlocks,
+      correlationId,
+      sessionId: session.id,
+    });
+
+    // 12. Persist the new state.
+    const resolutionStatus = resolutionDetected
+      ? ('resolved' as const)
+      : escalationDetected
+        ? ('escalated' as const)
+        : ('in_progress' as const);
+
+    await db
+      .update(troubleshootingSessions)
+      .set({
+        state: nextState as never,
+        status: resolutionDetected ? 'resolved' : escalationDetected ? 'escalated' : 'in_progress',
+        resolutionStatus,
+        escalationRequired: escalationDetected,
+        attemptCount,
+        issueTitle: nextState.issue || session.issueTitle,
+        issueSummary: nextState.diagnosis || session.issueSummary,
+        diagnosis: nextState.diagnosis,
+        aiProvider: outcome.provider as never,
+        aiModel: outcome.model,
+        lastOperation: 'generateTroubleshootingResponse',
+        articleIds: dedupe([...articleIds, ...generated.kbArticleIds]).slice(0, 10),
+        firstResponseAt: session.firstResponseAt ?? new Date(),
+        lastAgentReplyAt: new Date(),
+        lastActivityAt: new Date(),
+        resolvedAt: resolutionDetected ? new Date() : null,
+        escalatedAt: escalationDetected ? new Date() : null,
+      })
+      .where(eq(troubleshootingSessions.id, session.id));
+
+    await addTimelineEntry({
+      sessionId: session.id,
+      role: 'bot',
+      kind: resolutionDetected ? 'resolution' : escalationDetected ? 'escalation' : 'instruction',
+      summary: resolutionDetected
+        ? 'Agent confirmed the issue is resolved'
+        : escalationDetected
+          ? 'Escalated to IT'
+          : generated.nextStepTitle
+            ? `Provided next step: ${generated.nextStepTitle}`
+            : 'Provided troubleshooting guidance',
+      content: guard.text,
+      slackMessageTs: slackTs,
+      articleIds: generated.kbArticleIds,
+      provider: outcome.provider,
+      model: outcome.model,
+      metadata: {
+        guard: { verdict: guard.verdict, reasons: guard.reasons },
+        usedDocumentation: generated.usedDocumentation,
+        internalNotes: generated.internalNotes,
+        options: generated.options,
+        fallbackUsed: outcome.isFallback,
+        attempts: outcome.attempts,
+        state: nextState,
+      },
+    });
+
+    if (resolutionDetected) {
+      await resolveSession({ session, actor: 'ai', correlationId, state: nextState });
+    } else if (escalationDetected) {
+      await createEscalation({
+        session,
+        reason: generated.escalationReason ?? escalation.reason,
+        slackTs,
+        correlationId,
+        by: outcome.attempts.length > 1 || escalation.byThreshold ? 'threshold' : 'ai',
+      });
+    }
+
+    if (resolutionDetected) {
+      void addReaction(channelId, input.messageTs, 'white_check_mark').catch(() => undefined);
+      void addReaction(channelId, input.messageTs, PROCESSING_REACTION).catch(() => undefined);
+    }
+
+    return {
+      sessionId: session.id,
+      sessionCode: session.sessionCode,
+      action: resolutionDetected ? 'resolved' : escalationDetected ? 'escalated' : 'continued',
+      reply: guard.text,
+      provider: outcome.provider,
+    };
+  } catch (error) {
+    log.error(
+      { category: 'troubleshooting', sessionId: session.id, error, correlationId },
+      'Troubleshooting turn failed',
+    );
+    await addTimelineEntry({
+      sessionId: session.id,
+      role: 'system',
+      kind: 'error',
+      summary: 'Troubleshooting turn failed',
+      content: errorMessage(error).slice(0, 2000),
+    });
+
+    // Never leak internals to Slack (§23).
+    try {
+      const message = slackSafeErrorMessage(
+        error && typeof error === 'object' && 'kind' in error ? (error as { kind?: string }) : null,
+      );
+      await postMessage({
+        channel: channelId,
+        threadTs,
+        text: `${slackMention(input.actorId)} ${message}`.trim(),
+        correlationId,
+        sessionId: session.id,
+      });
+    } catch (postError) {
+      log.error({ category: 'slack', error: postError }, 'Could not post the error message to Slack');
+    }
+
+    return {
+      sessionId: session.id,
+      sessionCode: session.sessionCode,
+      action: 'failed',
+      reason: errorMessage(error).slice(0, 300),
+    };
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Steps                                                                       */
+/* -------------------------------------------------------------------------- */
+
+function dedupe<T>(values: T[]): T[] {
+  return [...new Set(values)];
+}
+
+async function persistAttachments(input: {
+  session: Session;
+  messageTs: string;
+  files: SlackFileObject[];
+  maxBytes: number;
+  maxScreenshots: number;
+  correlationId: string;
+}): Promise<SlackFileRow[]> {
+  const images = input.files.filter(isImageFile).slice(0, input.maxScreenshots);
+  const skipped = input.files.filter((file) => !isImageFile(file));
+  if (skipped.length > 0) {
+    await addTimelineEntry({
+      sessionId: input.session.id,
+      role: 'system',
+      kind: 'analysis',
+      summary: `${skipped.length} attachment(s) were not images and were not analysed`,
+      content: skipped
+        .map((file) => `${file.name ?? file.id} (${file.mimetype ?? file.filetype ?? 'unknown type'})`)
+        .join('\n'),
+    });
+    log.info(
+      { category: 'slack', count: skipped.length, correlationId: input.correlationId },
+      'Skipped non-image Slack attachments',
+    );
+  }
+  const rows: SlackFileRow[] = [];
+  for (const file of images) {
+    try {
+      const row = await persistSlackFile({
+        file,
+        channelId: input.session.channelId,
+        messageTs: input.messageTs,
+        threadTs: input.session.threadTs,
+        userId: input.session.slackUserId,
+        maxBytes: input.maxBytes,
+        correlationId: input.correlationId,
+      });
+      rows.push(row);
+    } catch (error) {
+      log.warn(
+        {
+          category: 'slack',
+          error: errorMessage(error),
+          slackFileId: file.id,
+          correlationId: input.correlationId,
+        },
+        'Could not store a Slack attachment',
+      );
+      await addTimelineEntry({
+        sessionId: input.session.id,
+        role: 'system',
+        kind: 'error',
+        summary: `Attachment "${file.name ?? file.id}" could not be analysed`,
+        content: errorMessage(error).slice(0, 1000),
+      });
+    }
+  }
+
+  for (const row of rows) {
+    await addTimelineEntry({
+      sessionId: input.session.id,
+      role: 'agent',
+      kind: 'screenshot',
+      summary: `Screenshot uploaded: ${row.name}`,
+      content: row.permalink ?? '',
+      metadata: { slackFileId: row.slackFileId, mimetype: row.mimetype, size: row.size },
+    });
+  }
+
+  return rows;
+}
+
+async function loadImages(rows: SlackFileRow[], max: number): Promise<AiImage[]> {
+  const images: AiImage[] = [];
+  for (const row of rows.slice(0, max)) {
+    const data = await readSlackFileBytes(row);
+    if (!data) continue;
+    images.push({ data, mimetype: row.mimetype ?? 'image/png', label: row.name });
+  }
+  return images;
+}
+
+async function analyzeScreenshots(input: {
+  runner: AiRunner;
+  session: Session;
+  files: SlackFileRow[];
+  articleIds: string[];
+  context: string;
+  maxScreenshots: number;
+}): Promise<ScreenshotAnalysisResult[]> {
+  if (input.files.length === 0) return [];
+  const results: ScreenshotAnalysisResult[] = [];
+
+  for (const row of input.files.slice(0, input.maxScreenshots)) {
+    const data = await readSlackFileBytes(row);
+    if (!data) {
+      results.push({
+        summary: `The attached image "${row.name}" was received but its bytes could not be read.`,
+        readable: false,
+        unreadableReason: 'The stored image could not be loaded for analysis.',
+        application: null,
+        osHint: null,
+        errorCodes: [],
+        errorMessages: [],
+        uiState: null,
+        matches: [],
+        confidence: 0,
+        notes: ['Ask the agent to re-upload the screenshot or type the exact error text.'],
+      });
+      continue;
+    }
+
+    try {
+      const references = await getReferenceImages(input.articleIds, 4);
+      const { result } = await input.runner.run(
+        'analyzeImage',
+        (provider) =>
+          provider.analyzeImage({
+            image: { data, mimetype: row.mimetype ?? 'image/png', label: row.name },
+            referenceImages: references,
+            context: input.context,
+          }),
+        { requiresVision: true },
+      );
+
+      results.push(result);
+      const stored: ScreenshotAnalysis = {
+        summary: result.summary,
+        readable: result.readable,
+        application: result.application,
+        osHint: result.osHint,
+        errorCodes: result.errorCodes,
+        errorMessages: result.errorMessages,
+        uiState: result.uiState,
+        confidence: result.confidence,
+        matchedArticleImageIds: result.matches.map((match) => match.articleImageId),
+        notes: result.notes,
+      };
+      await saveAnalysis(row.id, stored);
+    } catch (error) {
+      log.warn({ category: 'ai', error: errorMessage(error), slackFileId: row.slackFileId }, 'Screenshot analysis failed');
+      results.push({
+        summary: 'The screenshot could not be analysed automatically.',
+        readable: false,
+        unreadableReason: 'The vision model could not process this image.',
+        application: null,
+        osHint: null,
+        errorCodes: [],
+        errorMessages: [],
+        uiState: null,
+        matches: [],
+        confidence: 0,
+        notes: ['Ask the agent to describe or retype the error text.'],
+      });
+    }
+  }
+
+  return results;
+}
+
+async function buildTranscript(channelId: string, threadTs: string, sessionId: string): Promise<string> {
+  const persisted = await db
+    .select({ text: troubleshootingSessions.originalMessage })
+    .from(troubleshootingSessions)
+    .where(eq(troubleshootingSessions.id, sessionId))
+    .limit(1);
+
+  const parts: string[] = [];
+  if (persisted[0]?.text) parts.push(`Agent: ${persisted[0].text}`);
+
+  try {
+    const replies = await fetchThreadReplies(channelId, threadTs, 40);
+    for (const reply of replies) {
+      if (!reply.text) continue;
+      const who = reply.isBot ? 'Assistant' : 'Agent';
+      const stamp = reply.createdAt.toISOString().slice(11, 16);
+      parts.push(`${who} [${stamp}]: ${reply.text}`);
+    }
+  } catch (error) {
+    log.warn({ category: 'slack', error }, 'Could not read the Slack thread; using the persisted copy');
+  }
+
+  if (parts.length <= 1) {
+    const rows = await db
+      .select({ text: slackMessages.text, isBot: slackMessages.isBot })
+      .from(slackMessages)
+      .where(
+        and(eq(slackMessages.channelId, channelId), eq(slackMessages.threadTs, threadTs)),
+      )
+      .limit(40);
+    if (rows.length > 0) {
+      parts.length = 0;
+      for (const row of rows) parts.push(`${row.isBot ? 'Assistant' : 'Agent'}: ${row.text ?? ''}`);
+    }
+  }
+
+  const transcript = parts.join('\n');
+  return transcript.length > THREAD_MAX_CHARS ? transcript.slice(-THREAD_MAX_CHARS) : transcript;
+}
+
+async function detectResolution(input: {
+  runner: AiRunner;
+  message: string;
+  state: TroubleshootingState;
+  transcript: string;
+  messageAnalysis: { resolution: { detected: boolean; confidence: number; evidence: string } } | null;
+}): Promise<boolean> {
+  if (input.messageAnalysis?.resolution.detected) return true;
+  if (!mentionsResolution(input.message)) return false;
+
+  const outcome = await input.runner
+    .run('detectResolution', (provider) =>
+      provider.detectResolution({
+        messageText: input.message,
+        state: input.state,
+        threadTranscript: input.transcript.slice(-1200),
+      }),
+    )
+    .catch((error: unknown) => {
+      log.warn({ category: 'ai', error: errorMessage(error) }, 'Resolution detection failed');
+      return null;
+    });
+
+  const result = outcome?.result;
+  return Boolean(result && result.resolved && (result.confidence >= 0.5 || mentionsResolution(input.message)));
+}
+
+async function decideEscalation(input: {
+  runner: AiRunner;
+  session: Session;
+  attemptCount: number;
+  maxAttempts: number;
+  state: TroubleshootingState;
+  message: string;
+  messageAnalysis: { escalation: { required: boolean; reason: string }; agentNeedsEscalation: boolean } | null;
+}): Promise<{ escalate: boolean; reason: string; byThreshold: boolean }> {
+  if (input.messageAnalysis?.escalation.required || input.messageAnalysis?.agentNeedsEscalation) {
+    return {
+      escalate: true,
+      reason: input.messageAnalysis.escalation.reason || 'The agent asked for help from IT.',
+      byThreshold: false,
+    };
+  }
+
+  const thresholdReached = input.attemptCount >= input.maxAttempts;
+  const agentAsked = mentionsEscalation(input.message);
+
+  if (!thresholdReached && !agentAsked) {
+    return { escalate: false, reason: '', byThreshold: false };
+  }
+
+  const outcome = await input.runner
+    .run('detectEscalation', (provider) =>
+      provider.detectEscalation({
+        messageText: input.message,
+        state: input.state,
+        attemptCount: input.attemptCount,
+        maxAttempts: input.maxAttempts,
+        reason: agentAsked
+          ? 'The agent explicitly asked for IT support.'
+          : `The escalation threshold was reached (${input.attemptCount} of ${input.maxAttempts} attempts).`,
+      }),
+    )
+    .catch((error: unknown) => {
+      log.warn({ category: 'ai', error: errorMessage(error) }, 'Escalation detection failed');
+      return null;
+    });
+
+  const result = outcome?.result;
+  if (result?.escalate) {
+    return {
+      escalate: true,
+      reason: result.reason || (agentAsked ? 'The agent asked for IT support.' : 'Escalation threshold reached.'),
+      byThreshold: thresholdReached,
+    };
+  }
+
+  // A threshold that the model does not agree with is still honoured, but logged.
+  if (thresholdReached) {
+    return {
+      escalate: true,
+      reason: `Escalation threshold reached after ${input.attemptCount} troubleshooting attempts.`,
+      byThreshold: true,
+    };
+  }
+  return { escalate: false, reason: '', byThreshold: false };
+}
+
+/** Slack user mention for a member id, or an empty string when unknown. */
+function slackMention(userId: string | null | undefined): string {
+  return userId ? `<@${userId}>` : '';
+}
+
+/** Slack truncates button labels hard and offers no hover tooltip. */
+const BUTTON_LABEL_MAX = 40;
+
+function truncateLabel(label: string, max = BUTTON_LABEL_MAX): string {
+  if (label.length <= max) return label;
+  return `${label.slice(0, max - 1).trimEnd()}…`;
+}
+
+function buildReplyBlocks(text: string, options: TroubleshootingOption[]): unknown[] | undefined {
+  if (options.length === 0) return undefined;
+
+  const visible = options.slice(0, 5);
+  // When any choice is too long to read on its button, list the full choices in
+  // the message body and number the buttons so the mapping stays unambiguous.
+  const numbered = visible.some((option) => option.label.length > BUTTON_LABEL_MAX);
+
+  let body = text;
+  if (numbered) {
+    const legend = visible.map((option, index) => `*${index + 1}.* ${option.label}`).join('\n');
+    body = `${text}\n\n${legend}`;
+  }
+  const section = body.length > 2900 ? `${body.slice(0, 2897)}…` : body;
+
+  return [
+    { type: 'section', text: { type: 'mrkdwn', text: section } },
+    {
+      type: 'actions',
+      block_id: 'hdai_options',
+      elements: visible.map((option, index) => {
+        const rawLabel = numbered ? `${index + 1}. ${option.label}` : option.label;
+        return {
+          type: 'button',
+          action_id: `hdai_opt_${index}`,
+          text: { type: 'plain_text', text: truncateLabel(rawLabel), emoji: true },
+          value: option.value.slice(0, 1800),
+          accessibility_label: option.label.slice(0, 75),
+        };
+      }),
+    },
+  ];
+}
+
+function buildEscalationReply(reason: string, infoItems: string[], contact: string | null): string {
+  const lines = [
+    "I've gone through the available troubleshooting steps and this needs a human IT technician.",
+    '',
+    `Reason: ${reason || 'The issue could not be resolved with the available steps.'}`,
+    '',
+    'Please provide the following information to IT:',
+    ...infoItems.map((item) => `• ${item}`),
+    '',
+    contact ? `You can also reach IT through ${contact}.` : '',
+    '🔴 Status: Escalation required',
+  ];
+  return lines.filter((line, index, array) => !(line === '' && array[index - 1] === '')).join('\n').trim();
+}
+
+/* -------------------------------------------------------------------------- */
+/* Resolution & escalation records                                             */
+/* -------------------------------------------------------------------------- */
+
+export async function resolveSession(input: {
+  session: Session;
+  actor: 'agent' | 'ai' | 'admin';
+  correlationId: string;
+  state?: TroubleshootingState;
+  note?: string;
+}): Promise<void> {
+  const now = new Date();
+  await db
+    .update(troubleshootingSessions)
+    .set({
+      status: 'resolved',
+      resolutionStatus: 'resolved',
+      resolvedAt: now,
+      lastActivityAt: now,
+      state: (input.state
+        ? { ...input.state, resolutionStatus: 'resolved' }
+        : { ...normalizeState(input.session.state), resolutionStatus: 'resolved' }) as never,
+    })
+    .where(eq(troubleshootingSessions.id, input.session.id));
+
+  await addTimelineEntry({
+    sessionId: input.session.id,
+    role: input.actor === 'admin' ? 'admin' : input.actor === 'ai' ? 'bot' : 'agent',
+    kind: 'resolution',
+    summary:
+      input.actor === 'agent'
+        ? 'Agent confirmed the issue is resolved'
+        : input.actor === 'admin'
+          ? 'Administrator marked the session resolved'
+          : 'Resolution confirmed by the agent',
+    content: input.note ?? '',
+    metadata: { actor: input.actor },
+  });
+
+  // Close any open escalation for this session.
+  await db
+    .update(escalations)
+    .set({ status: 'closed', closedAt: now, updatedAt: now })
+    .where(and(eq(escalations.sessionId, input.session.id), eq(escalations.status, 'open')));
+
+  log.info(
+    { category: 'troubleshooting', sessionCode: input.session.sessionCode, actor: input.actor },
+    'Troubleshooting session resolved',
+  );
+}
+
+/* Human-readable status copy posted back into the ticket thread. */
+const STATUS_SLACK_LABEL: Record<SessionStatus, string> = {
+  in_progress: 'In progress',
+  assigned: 'Assigned',
+  waiting_on_user: 'Waiting on you',
+  paused: 'Paused',
+  resolved: 'Resolved',
+  escalated: 'Escalated',
+  closed: 'Closed',
+  abandoned: 'Closed',
+};
+
+const STATUS_SLACK_MESSAGE: Record<SessionStatus, string> = {
+  in_progress: 'Your ticket is back in progress — we are working on it.',
+  assigned: 'Your ticket has been assigned to a technician who will follow up here.',
+  waiting_on_user: 'We are waiting on you for more information before we can continue.',
+  paused: 'Troubleshooting for this thread has been paused. We will pick it back up shortly.',
+  resolved:
+    'This issue has been marked as resolved. Reply here if it happens again and we will reopen it.',
+  escalated: 'Your issue has been escalated to our IT team for further help.',
+  closed:
+    'This ticket has been closed. Reply here if you still need help and we will take another look.',
+  abandoned: 'This ticket has been closed because we did not hear back. Reply here to reopen it.',
+};
+
+/**
+ * Sets a session's status from the dashboard (§ admin actions) and — unless
+ * suppressed — posts a status update back into the originating Slack thread so
+ * the reporter is kept informed.
+ */
+export async function setSessionStatus(input: {
+  session: Session;
+  status: SessionStatus;
+  note?: string;
+  correlationId: string;
+  notify?: boolean;
+}): Promise<void> {
+  const { session, status } = input;
+  const now = new Date();
+
+  const patch: Partial<typeof troubleshootingSessions.$inferInsert> = {
+    status,
+    lastActivityAt: now,
+    adminPaused: status === 'paused',
+    adminPauseReason: status === 'paused' ? (input.note ?? 'Paused by administrator') : null,
+  };
+
+  if (status === 'resolved') {
+    patch.resolutionStatus = 'resolved';
+    patch.resolvedAt = now;
+    patch.escalatedAt = null;
+    patch.closedAt = null;
+    patch.escalationRequired = false;
+  } else if (status === 'escalated') {
+    patch.resolutionStatus = 'escalated';
+    patch.escalatedAt = now;
+    patch.resolvedAt = null;
+    patch.closedAt = null;
+    patch.escalationRequired = true;
+  } else if (status === 'closed' || status === 'abandoned') {
+    patch.closedAt = now;
+    patch.escalatedAt = null;
+    if (status === 'abandoned') {
+      patch.resolutionStatus = 'abandoned';
+      patch.resolvedAt = null;
+    }
+  } else {
+    patch.resolutionStatus = 'in_progress';
+    patch.resolvedAt = null;
+    patch.escalatedAt = null;
+    patch.closedAt = null;
+  }
+
+  await db
+    .update(troubleshootingSessions)
+    .set(patch)
+    .where(eq(troubleshootingSessions.id, session.id));
+
+  if (status === 'resolved' || status === 'closed' || status === 'abandoned') {
+    await db
+      .update(escalations)
+      .set({ status: 'closed', closedAt: now, updatedAt: now })
+      .where(and(eq(escalations.sessionId, session.id), eq(escalations.status, 'open')));
+  }
+
+  if (status === 'escalated') {
+    await db
+      .insert(escalations)
+      .values({
+        sessionId: session.id,
+        reason: input.note ?? 'Status set to escalated by an administrator',
+        escalatedBy: 'admin',
+      })
+      .onConflictDoNothing();
+  }
+
+  if (input.notify !== false && session.channelId && session.threadTs) {
+    const lines = [
+      `${slackMention(session.slackUserId)} :information_source: *Ticket ${session.sessionCode} — ${
+        STATUS_SLACK_LABEL[status]
+      }*`,
+      STATUS_SLACK_MESSAGE[status],
+      input.note ? `Message from our team: ${input.note}` : '',
+    ].filter(Boolean);
+    try {
+      await postMessage({
+        channel: session.channelId,
+        threadTs: session.threadTs,
+        text: lines.join('\n'),
+        correlationId: input.correlationId,
+        sessionId: session.id,
+      });
+    } catch (error) {
+      log.warn({ category: 'slack', error }, 'Could not post the session status update to Slack');
+    }
+  }
+
+  log.info(
+    {
+      category: 'troubleshooting',
+      sessionCode: session.sessionCode,
+      status,
+      correlationId: input.correlationId,
+    },
+    'Troubleshooting session status changed by admin',
+  );
+}
+
+export async function escalateSession(input: {
+  session: Session;
+  reason: string;
+  by: string;
+  slackMessageTs?: string | null;
+  correlationId: string;
+}): Promise<void> {
+  const now = new Date();
+  await db
+    .update(troubleshootingSessions)
+    .set({
+      status: 'escalated',
+      resolutionStatus: 'escalated',
+      escalationRequired: true,
+      escalatedAt: now,
+      lastActivityAt: now,
+    })
+    .where(eq(troubleshootingSessions.id, input.session.id));
+
+  await createEscalation({
+    session: input.session,
+    reason: input.reason,
+    by: input.by,
+    slackTs: input.slackMessageTs ?? null,
+    correlationId: input.correlationId,
+  });
+}
+
+async function createEscalation(input: {
+  session: Session;
+  reason: string;
+  by: string;
+  slackTs: string | null;
+  correlationId: string;
+}): Promise<void> {
+  const config = await getTroubleshootingConfig();
+  const [existing] = await db
+    .select()
+    .from(escalations)
+    .where(and(eq(escalations.sessionId, input.session.id), eq(escalations.status, 'open')))
+    .limit(1);
+
+  if (existing) {
+    await db
+      .update(escalations)
+      .set({ reason: input.reason, updatedAt: new Date() })
+      .where(eq(escalations.id, existing.id));
+    return;
+  }
+
+  await db.insert(escalations).values({
+    sessionId: input.session.id,
+    reason: input.reason,
+    requiredInfo: config.escalationInfoItems,
+    status: 'open',
+    escalatedBy: input.by,
+    slackMessageTs: input.slackTs,
+    escalatedTo: config.escalationContact,
+  });
+
+  await addTimelineEntry({
+    sessionId: input.session.id,
+    role: 'system',
+    kind: 'escalation',
+    summary: `Escalated to IT (${input.by})`,
+    content: input.reason,
+    slackMessageTs: input.slackTs,
+    metadata: { requiredInfo: config.escalationInfoItems },
+  });
+
+  // Notify the configured IT contacts in the same thread, best effort (§5).
+  if (config.escalationNotifyUserIds.length > 0) {
+    const mentions = config.escalationNotifyUserIds.map((id) => `<@${id}>`).join(' ');
+    const lines = [
+      `${mentions} :rotating_light: *Escalation ${input.session.sessionCode}* — ${
+        input.session.issueTitle || input.session.sessionCode
+      }`,
+      `Reason: ${input.reason}`,
+      config.escalationContact ? `Contact: ${config.escalationContact}` : '',
+      `Reported by: ${
+        input.session.agentDisplayName || input.session.agentName || input.session.slackUserId
+      }`,
+      'Please take over this thread when you can.',
+    ].filter(Boolean);
+    try {
+      await slackCall('chat.postMessage', {
+        channel: input.session.channelId,
+        text: lines.join('\n'),
+        thread_ts: input.session.threadTs,
+      });
+    } catch (error) {
+      log.warn({ category: 'slack', error }, 'Could not post the escalation notification');
+    }
+  }
+
+  log.warn(
+    {
+      category: 'troubleshooting',
+      sessionCode: input.session.sessionCode,
+      reason: input.reason,
+      by: input.by,
+      correlationId: input.correlationId,
+    },
+    'Session escalated to IT',
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Admin helpers used by the dashboard                                         */
+/* -------------------------------------------------------------------------- */
+
+export async function setSessionPaused(session: Session, paused: boolean, reason?: string): Promise<void> {
+  await db
+    .update(troubleshootingSessions)
+    .set({
+      adminPaused: paused,
+      adminPauseReason: paused ? (reason ?? 'Paused by administrator') : null,
+      status: paused ? 'paused' : 'in_progress',
+      lastActivityAt: new Date(),
+    })
+    .where(eq(troubleshootingSessions.id, session.id));
+}
+
+export async function addAdminNote(session: Session, note: string, user: Pick<User, 'name' | 'email'>) {
+  const notes = [
+    ...(session.adminNotes ?? []),
+    { id: crypto.randomUUID(), note, createdAt: new Date().toISOString(), userName: user.name },
+  ].slice(-50);
+  await db
+    .update(troubleshootingSessions)
+    .set({ adminNotes: notes as never, lastActivityAt: new Date() })
+    .where(eq(troubleshootingSessions.id, session.id));
+  return notes;
+}
+
+export async function setEscalationStatus(
+  escalationId: string,
+  status: EscalationStatus,
+  user: Pick<User, 'id' | 'email' | 'name'>,
+): Promise<void> {
+  const now = new Date();
+  await db
+    .update(escalations)
+    .set({
+      status,
+      acknowledgedBy: status === 'acknowledged' ? user.id : null,
+      acknowledgedAt: status === 'acknowledged' ? now : null,
+      closedAt: status === 'closed' ? now : null,
+      updatedAt: now,
+    })
+    .where(eq(escalations.id, escalationId));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Serialisation                                                               */
+/* -------------------------------------------------------------------------- */
+
+export function sessionToDto(session: Session, extra: { articlesUsed?: Array<{ id: string; title: string; category: string }> } = {}): SessionDto {
+  const end = session.resolvedAt ?? session.closedAt ?? session.escalatedAt ?? new Date();
+  return {
+    id: session.id,
+    sessionCode: session.sessionCode,
+    status: session.status,
+    resolutionStatus: session.resolutionStatus,
+    escalationRequired: session.escalationRequired,
+    channelId: session.channelId,
+    channelName: session.channelName,
+    threadTs: session.threadTs,
+    triggerMessageTs: session.triggerMessageTs,
+    permalink: session.permalink,
+    slackUserId: session.slackUserId,
+    agentName: session.agentName,
+    agentDisplayName: session.agentDisplayName,
+    issueTitle: session.issueTitle,
+    issueSummary: session.issueSummary,
+    diagnosis: session.diagnosis,
+    state: normalizeState(session.state),
+    attemptCount: session.attemptCount,
+    aiProvider: session.aiProvider,
+    aiModel: session.aiModel,
+    adminPaused: session.adminPaused,
+    adminNotes: session.adminNotes ?? [],
+    articleIds: session.articleIds,
+    articlesUsed: extra.articlesUsed ?? [],
+    totalInputTokens: session.totalInputTokens,
+    totalOutputTokens: session.totalOutputTokens,
+    totalTokens: session.totalTokens,
+    estimatedCost: session.estimatedCost,
+    firstResponseAt: session.firstResponseAt?.toISOString() ?? null,
+    resolvedAt: session.resolvedAt?.toISOString() ?? null,
+    escalatedAt: session.escalatedAt?.toISOString() ?? null,
+    closedAt: session.closedAt?.toISOString() ?? null,
+    durationSeconds: session.firstResponseAt
+      ? Math.round((end.getTime() - session.firstResponseAt.getTime()) / 1000)
+      : null,
+    createdAt: session.createdAt.toISOString(),
+    updatedAt: session.updatedAt.toISOString(),
+    lastActivityAt: session.lastActivityAt.toISOString(),
+  };
+}
+
+export { fileToDto, addReaction, upsertSlackMessage };
+export type { SlackFileRow };

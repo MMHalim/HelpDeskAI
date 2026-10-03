@@ -1,0 +1,11 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+onlyBuiltDependencies: esbuild
+
+allowBuilds:
+  esbuild: true
+  # Optional peer of unpdf used for rendering PDF pages to images.
+  # Not required: the knowledge-base importer only extracts text.
+  canvas: false
