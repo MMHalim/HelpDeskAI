@@ -14,8 +14,7 @@ build/
 !.env.example
 
 # Runtime data (local file storage fallback + uploads)
-storage/
-!storage/.gitkeep
+/storage/
 tmp/
 
 # Logs
