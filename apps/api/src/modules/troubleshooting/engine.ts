@@ -51,6 +51,7 @@ import {
   upsertSlackMessage,
 } from '../slack/service.js';
 import { slackCall } from '../slack/client.js';
+import { buildGreetingReply, slackMention } from '../slack/greeting.js';
 import type { SlackFileObject } from '../slack/types.js';
 import { AiRunner } from '../ai/runner.js';
 import { getActiveInstructions } from '../ai/config-service.js';
@@ -645,7 +646,7 @@ async function runTurn(input: TurnInput): Promise<EngineResult> {
 
     // Always greet the person who wrote the message (§5).
     const mention = slackMention(input.actorId);
-    const finalText = mention ? `${mention} ${guard.text}` : guard.text;
+    const finalText = buildGreetingReply(guard.text, mention);
 
     // Clarifying questions can be answered with one click (§5, quick replies).
     const replyBlocks =
@@ -1075,11 +1076,6 @@ async function decideEscalation(input: {
     };
   }
   return { escalate: false, reason: '', byThreshold: false };
-}
-
-/** Slack user mention for a member id, or an empty string when unknown. */
-function slackMention(userId: string | null | undefined): string {
-  return userId ? `<@${userId}>` : '';
 }
 
 /** Slack truncates button labels hard and offers no hover tooltip. */
