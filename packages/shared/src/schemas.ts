@@ -266,6 +266,12 @@ export const createUserSchema = z.object({
 });
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 
+/** Moves an account created before the Supabase link onto Supabase Auth. */
+export const linkSupabaseAuthSchema = z.object({
+  password: z.string().min(12, 'Use at least 12 characters').max(200),
+});
+export type LinkSupabaseAuthInput = z.infer<typeof linkSupabaseAuthSchema>;
+
 /* -------------------------------------------------------------------------- */
 /* Generic API helpers                                                         */
 /* -------------------------------------------------------------------------- */

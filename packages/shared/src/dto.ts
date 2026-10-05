@@ -30,6 +30,8 @@ export interface Paginated<T> {
 
 export interface UserDto {
   id: string;
+  /** Supabase Auth identity, or null for accounts predating the link. */
+  authUserId: string | null;
   email: string;
   name: string;
   role: UserRole;

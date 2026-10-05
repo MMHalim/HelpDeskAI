@@ -9,10 +9,12 @@ import {
   boolean,
   customType,
   doublePrecision,
+  foreignKey,
   index,
   integer,
   jsonb,
   pgEnum,
+  pgSchema,
   pgTable,
   text,
   timestamp,
@@ -94,20 +96,45 @@ export const logLevelEnum = pgEnum('log_level', ['debug', 'info', 'warn', 'error
 /* Identity & access                                                           */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Minimal view of Supabase Auth's `auth.users`, declared only so `users` can
+ * carry a real foreign key to its identity. Never written to by the ORM.
+ */
+const authSchema = pgSchema('auth');
+
+const authUsers = authSchema.table('users', {
+  id: uuid('id').primaryKey(),
+});
+
 export const users = pgTable(
   'users',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    /**
+     * Identity in Supabase Auth (`auth.users`). Credentials live there: a
+     * non-null value means the password is verified by GoTrue, so
+     * `password_hash` is null. Rows created before the Supabase link keep a
+     * local hash and are migrated by `linkUserToSupabaseAuth`.
+     */
+    authUserId: uuid('auth_user_id'),
     email: varchar('email', { length: 320 }).notNull(),
     name: varchar('name', { length: 120 }).notNull(),
-    passwordHash: text('password_hash').notNull(),
+    passwordHash: text('password_hash'),
     role: userRoleEnum('role').notNull().default('viewer'),
     isActive: boolean('is_active').notNull().default(true),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('users_email_key').on(sql`lower(${t.email})`)],
+  (t) => [
+    uniqueIndex('users_email_key').on(sql`lower(${t.email})`),
+    uniqueIndex('users_auth_user_id_key').on(t.authUserId),
+    foreignKey({
+      name: 'users_auth_user_id_fkey',
+      columns: [t.authUserId],
+      foreignColumns: [authUsers.id],
+    }).onDelete('set null'),
+  ],
 );
 
 export const authSessions = pgTable(
