@@ -215,10 +215,10 @@ export function UsersPage() {
       >
         <div className="space-y-4">
           <Field label="Name">
-            <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+            <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value.trim() })} />
           </Field>
           <Field label="Email">
-            <Input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
+            <Input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value.trim() })} />
           </Field>
           <PasswordField value={form.password} onChange={(password) => setForm({ ...form, password })} />
           <Field label="Role">
