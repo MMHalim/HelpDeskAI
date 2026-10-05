@@ -77,8 +77,21 @@ export const AI_OPERATIONS = [
   'classifyIssue',
   'detectResolution',
   'detectEscalation',
+  'categorizeIssue',
 ] as const;
 export type AiOperation = (typeof AI_OPERATIONS)[number];
+
+/**
+ * Operational priority of an incident category. Separate from
+ * `ARTICLE_PRIORITIES` (which ranks knowledge-base articles) because this
+ * drives queue-impact reporting, not retrieval.
+ */
+export const INCIDENT_PRIORITY_LEVELS = ['critical', 'high', 'medium', 'low'] as const;
+export type IncidentPriorityLevel = (typeof INCIDENT_PRIORITY_LEVELS)[number];
+
+/** Whether a categorization was chosen by the AI or by an administrator. */
+export const CATEGORIZATION_SOURCES = ['ai', 'manual'] as const;
+export type CategorizationSource = (typeof CATEGORIZATION_SOURCES)[number];
 
 export const ESCALATION_STATUSES = ['open', 'acknowledged', 'closed'] as const;
 export type EscalationStatus = (typeof ESCALATION_STATUSES)[number];

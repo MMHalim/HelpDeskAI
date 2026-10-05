@@ -30,6 +30,7 @@ import {
 } from '../../db/schema.js';
 import { sessionToDto } from './engine.js';
 import { fileToDto } from '../slack/files.js';
+import { getCategorization } from '../categorization/service.js';
 
 function sessionSelect() {
   return {
@@ -96,28 +97,30 @@ export async function getSessionDetail(id: string): Promise<SessionDetailDto | n
   if (!row) return null;
   const session = { ...row.session, channelName: row.channelName };
 
-  const [timelineRows, fileRows, messageRows, escalationRows, aiRows, articleRows] = await Promise.all([
-    getTimelineRows(id),
-    db.select().from(slackFiles).where(eq(slackFiles.channelId, session.channelId)).orderBy(desc(slackFiles.createdAt)).limit(50),
-    db
-      .select()
-      .from(slackMessages)
-      .where(and(eq(slackMessages.channelId, session.channelId), eq(slackMessages.threadTs, session.threadTs)))
-      .orderBy(sql`${slackMessages.slackMessageTs}::double precision asc`)
-      .limit(200),
-    db.select().from(escalations).where(eq(escalations.sessionId, id)).orderBy(desc(escalations.createdAt)).limit(1),
-    db.select().from(aiRequests).where(eq(aiRequests.sessionId, id)).orderBy(desc(aiRequests.createdAt)).limit(100),
-    session.articleIds.length > 0
-      ? db
-          .select({
-            id: troubleshootingArticles.id,
-            title: troubleshootingArticles.title,
-            category: troubleshootingArticles.category,
-          })
-          .from(troubleshootingArticles)
-          .where(inArray(troubleshootingArticles.id, session.articleIds))
-      : Promise.resolve([] as Array<{ id: string; title: string; category: string }>),
-  ]);
+  const [timelineRows, fileRows, messageRows, escalationRows, aiRows, articleRows, categorization] =
+    await Promise.all([
+      getTimelineRows(id),
+      db.select().from(slackFiles).where(eq(slackFiles.channelId, session.channelId)).orderBy(desc(slackFiles.createdAt)).limit(50),
+      db
+        .select()
+        .from(slackMessages)
+        .where(and(eq(slackMessages.channelId, session.channelId), eq(slackMessages.threadTs, session.threadTs)))
+        .orderBy(sql`${slackMessages.slackMessageTs}::double precision asc`)
+        .limit(200),
+      db.select().from(escalations).where(eq(escalations.sessionId, id)).orderBy(desc(escalations.createdAt)).limit(1),
+      db.select().from(aiRequests).where(eq(aiRequests.sessionId, id)).orderBy(desc(aiRequests.createdAt)).limit(100),
+      session.articleIds.length > 0
+        ? db
+            .select({
+              id: troubleshootingArticles.id,
+              title: troubleshootingArticles.title,
+              category: troubleshootingArticles.category,
+            })
+            .from(troubleshootingArticles)
+            .where(inArray(troubleshootingArticles.id, session.articleIds))
+        : Promise.resolve([] as Array<{ id: string; title: string; category: string }>),
+      getCategorization(id),
+    ]);
 
   const articleById = new Map(articleRows.map((article) => [article.id, article]));
   const articlesUsed = session.articleIds
@@ -127,6 +130,7 @@ export async function getSessionDetail(id: string): Promise<SessionDetailDto | n
   const escalation = escalationRows[0];
   return {
     ...sessionToDto(session, { articlesUsed }),
+    categorization,
     originalMessage: session.originalMessage,
     files: fileRows.map((file) => fileToDto(file)),
     messages: messageRows.map((message) => ({

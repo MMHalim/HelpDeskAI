@@ -22,6 +22,20 @@
       "when": 1791014113222,
       "tag": "0002_striped_sebastian_shaw",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791220925182,
+      "tag": "0003_zippy_may_parker",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791221376011,
+      "tag": "0004_lame_outlaw_kid",
+      "breakpoints": true
     }
   ]
 }

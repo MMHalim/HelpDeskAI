@@ -19,6 +19,7 @@ import type { SessionDetailDto, SessionStatus } from '@helpdesk/shared';
 import { api, ApiError } from '../lib/api';
 import { Badge, Button, Card, CardHeader, EmptyState, Modal, Spinner, Textarea } from '../components/ui';
 import { StatusChangeModal } from '../components/StatusChangeModal';
+import { CategorizationEditor } from '../components/CategorizationEditor';
 import { useAuth } from '../auth';
 import {
   cn,
@@ -220,6 +221,60 @@ export function SessionDetailPage() {
               <Row label="Cost" value={formatCurrency(session.estimatedCost)} />
             </dl>
           </Card>
+
+          {session.categorization ? (
+            <Card>
+              <CardHeader
+                title="Issue category"
+                description="Used for reporting on the most received issues"
+                actions={
+                  <Badge
+                    className={cn(
+                      session.categorization.priorityLevel === 'critical'
+                        ? 'border-rose-500/30 bg-rose-500/15 text-rose-300'
+                        : session.categorization.priorityLevel === 'high'
+                          ? 'border-amber-500/30 bg-amber-500/15 text-amber-300'
+                          : 'border-slate-600/40 bg-slate-700/30 text-slate-300',
+                    )}
+                  >
+                    {humanize(session.categorization.priorityLevel)} impact
+                  </Badge>
+                }
+              />
+              <div className="space-y-3 px-5 py-4 text-sm">
+                <p className="text-slate-200">
+                  {session.categorization.categoryName}
+                  <span className="mx-2 text-slate-600">&rsaquo;</span>
+                  <span className="font-medium">{session.categorization.subcategoryName}</span>
+                </p>
+                {session.categorization.operationalImpact ? (
+                  <p className="text-xs text-slate-400">{session.categorization.operationalImpact}</p>
+                ) : null}
+                {session.categorization.rationale ? (
+                  <p className="text-xs text-slate-400">{session.categorization.rationale}</p>
+                ) : null}
+                <p className="text-xs text-slate-500">
+                  {session.categorization.source === 'manual' ? 'Set by' : 'Categorized by AI'} ·{' '}
+                  {Math.round(session.categorization.confidence * 100)}% confidence ·{' '}
+                  {formatDateTime(session.categorization.categorizedAt)}
+                </p>
+
+                {isAdmin ? (
+                  <CategorizationEditor sessionId={id} currentSubcategoryId={session.categorization.subcategoryId} />
+                ) : null}
+              </div>
+            </Card>
+          ) : session.resolutionStatus === 'resolved' ? (
+            <Card>
+              <CardHeader title="Issue category" description="Used for reporting on the most received issues" />
+              <div className="space-y-3 px-5 py-4 text-sm">
+                <p className="text-slate-400">
+                  This issue was resolved without being categorized, so it is missing from the reports.
+                </p>
+                {isAdmin ? <CategorizationEditor sessionId={id} currentSubcategoryId="" /> : null}
+              </div>
+            </Card>
+          ) : null}
 
           {session.escalation ? (
             <Card>

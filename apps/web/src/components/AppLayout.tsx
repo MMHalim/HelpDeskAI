@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   Activity,
+  BarChart3,
   BookOpen,
   Bot,
   LayoutDashboard,
@@ -17,6 +18,7 @@ const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/sessions', label: 'Sessions', icon: MessagesSquare },
   { to: '/escalations', label: 'Escalations', icon: ShieldAlert },
+  { to: '/issue-categories', label: 'Issue Categories', icon: BarChart3 },
   { to: '/articles', label: 'Knowledge Base', icon: BookOpen },
   { to: '/ai', label: 'AI Providers', icon: Bot },
   { to: '/logs', label: 'Logs', icon: Activity },

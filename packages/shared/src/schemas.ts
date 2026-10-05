@@ -293,4 +293,15 @@ export const analyticsQuerySchema = z.object({
   days: z.coerce.number().int().min(1).max(365).default(30),
 });
 
+/** Manual correction of the category a resolved issue was filed under. */
+export const updateCategorizationSchema = z.object({
+  subcategoryId: z.string().uuid('Invalid sub-category'),
+  rationale: z.string().max(500).default(''),
+});
+
+export const issueReportQuerySchema = z.object({
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+});
+
 export type { z };

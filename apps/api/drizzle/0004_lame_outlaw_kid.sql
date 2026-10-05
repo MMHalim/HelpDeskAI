@@ -1,0 +1,2 @@
+ALTER TABLE "issue_categories" ADD COLUMN "baseline_incident_count" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "issue_categories" ADD COLUMN "baseline_percentage" double precision DEFAULT 0 NOT NULL;

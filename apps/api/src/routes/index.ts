@@ -8,6 +8,7 @@ import { aiRoutes } from './ai.js';
 import { settingsRoutes } from './settings.js';
 import { analyticsRoutes } from './analytics.js';
 import { userRoutes } from './users.js';
+import { categorizationRoutes } from './categorization.js';
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(healthRoutes);
@@ -19,4 +20,5 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(settingsRoutes);
   await app.register(analyticsRoutes);
   await app.register(userRoutes);
+  await app.register(categorizationRoutes);
 }

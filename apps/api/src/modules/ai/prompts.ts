@@ -12,6 +12,7 @@ import { PROVIDER_META } from '@helpdesk/shared';
 import type {
   AnalyzeImageInput,
   AnalyzeMessageInput,
+  CategorizeIssueInput,
   ClassifyIssueInput,
   DetectEscalationInput,
   DetectResolutionInput,
@@ -279,6 +280,51 @@ Escalate when:
     user: `TRoubleshooting STATE:\n${formatState(input.state)}\n\nAGENT'S LATEST MESSAGE:\n${input.messageText || '(none)'}${
       input.reason ? `\n\nSYSTEM NOTE: ${input.reason}` : ''
     }`,
+  };
+}
+
+export function categorizationPrompt(input: CategorizeIssueInput): {
+  system: string;
+  user: string;
+} {
+  const choices = input.choices
+    .map(
+      (choice) =>
+        `- id=${choice.id} | ${choice.categoryName} > ${choice.name} | typical priority: ${choice.priorityLevel} | ${choice.description}`,
+    )
+    .join('\n');
+
+  return {
+    system: `${BASE_SYSTEM}
+
+TASK: file this RESOLVED IT troubleshooting issue under exactly one sub-category, for reporting on which issues the support desk receives most often.
+You may only use the ids listed below. Never invent a category or invent an id.
+
+ALLOWED SUB-CATEGORIES:
+${choices || '- (none available)'}
+
+Return JSON with exactly these keys:
+{
+  "subcategoryId": "the id of the single best matching sub-category",
+  "confidence": 0.0,
+  "rationale": "one short sentence explaining the choice"
+}
+
+RULES:
+- Pick exactly ONE sub-category: the root cause that had to be fixed, not the symptom that was reported.
+- Judge on what actually happened, using the knowledge-base article that solved it when there was one.
+- When two sub-categories are plausible, choose the one describing the underlying fault (e.g. an agent who cannot send chat messages because the workstation is frozen is "Freshchat Lagging / Freezing", not "Message Delivery Failures"; a network outage that also drops calls is "Internet Connectivity Issues" when connectivity itself was the fault).
+- Set "confidence" low when the issue does not fit any listed sub-category; never guess to appear certain.`,
+    user: [
+      `ISSUE TITLE:\n${input.issueTitle || '(not set)'}`,
+      `ISSUE SUMMARY:\n${input.issueSummary || '(none)'}`,
+      input.diagnosis ? `DIAGNOSIS:\n${input.diagnosis}` : '',
+      input.articlesUsed.length ? `KNOWLEDGE-BASE ARTICLES USED:\n${input.articlesUsed.map((a) => `- ${a}`).join('\n')}` : '',
+      `AGENT'S CONFIRMATION:\n${input.agentMessage}`,
+      input.threadTranscript ? `THREAD:\n${input.threadTranscript}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
   };
 }
 

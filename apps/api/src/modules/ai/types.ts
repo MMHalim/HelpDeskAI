@@ -140,6 +140,33 @@ export interface IssueClassification {
   confidence: number;
 }
 
+/** One allowed sub-category, rendered into the categorization prompt. */
+export interface CategorizationChoice {
+  id: string;
+  name: string;
+  categoryName: string;
+  /** Documents the queue impact, so the model can weigh ambiguous cases. */
+  priorityLevel: string;
+  description: string;
+}
+
+export interface CategorizeIssueInput {
+  issueTitle: string;
+  issueSummary: string;
+  diagnosis: string;
+  agentMessage: string;
+  threadTranscript: string;
+  articlesUsed: string[];
+  choices: CategorizationChoice[];
+}
+
+export interface IssueCategorizationResult {
+  /** Empty when the model picked nothing usable. */
+  subcategoryId: string;
+  confidence: number;
+  rationale: string;
+}
+
 export interface AnalyzeImageInput {
   image: AiImage;
   /** Documented reference images to compare against (§27). */
@@ -308,6 +335,7 @@ export interface AIProvider {
   ): Promise<TroubleshootingResponseResult>;
   summarizeThread(input: SummarizeThreadInput): Promise<string>;
   classifyIssue(input: ClassifyIssueInput): Promise<IssueClassification>;
+  categorizeIssue(input: CategorizeIssueInput): Promise<IssueCategorizationResult>;
   detectResolution(input: DetectResolutionInput): Promise<DetectResolutionResult>;
   detectEscalation(input: DetectEscalationInput): Promise<DetectEscalationResult>;
 }

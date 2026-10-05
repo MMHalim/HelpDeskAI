@@ -5,6 +5,7 @@ import { Spinner } from './components/ui';
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { SessionsPage } from './pages/SessionsPage';
+import { IssueReportPage } from './pages/IssueReportPage';
 import { SessionDetailPage } from './pages/SessionDetailPage';
 import { ArticlesPage } from './pages/ArticlesPage';
 import { ArticleEditorPage } from './pages/ArticleEditorPage';
@@ -49,6 +50,7 @@ export function App() {
           <Route path="sessions" element={<SessionsPage />} />
           <Route path="sessions/:id" element={<SessionDetailPage />} />
           <Route path="escalations" element={<EscalationsPage />} />
+          <Route path="issue-categories" element={<IssueReportPage />} />
           <Route path="articles" element={<ArticlesPage />} />
           <Route
             path="articles/new"

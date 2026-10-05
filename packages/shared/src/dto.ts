@@ -6,9 +6,11 @@ import type {
   AiOperation,
   AiProviderId,
   ArticlePriority,
+  CategorizationSource,
   DocumentSourceType,
   DocumentStatus,
   EscalationStatus,
+  IncidentPriorityLevel,
   LogLevel,
   ResolutionStatus,
   SessionStatus,
@@ -331,6 +333,89 @@ export interface SessionDetailDto extends SessionDto {
     attempt: number;
     createdAt: string;
   }>;
+  /** Category and sub-category the resolved issue was filed under (§32). */
+  categorization: IssueCategorizationDto | null;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Incident taxonomy                                                           */
+/* -------------------------------------------------------------------------- */
+
+export interface IssueSubcategoryDto {
+  id: string;
+  categoryId: string;
+  name: string;
+  slug: string;
+  description: string;
+  /** Queue impact when this sub-category is hit. */
+  priorityLevel: IncidentPriorityLevel;
+  operationalImpact: string;
+  /** Historical incident count, kept only as a reporting baseline. */
+  baselineIncidentCount: number;
+  baselinePercentage: number;
+  sortOrder: number;
+  isActive: boolean;
+}
+
+export interface IssueCategoryDto {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  baselineIncidentCount: number;
+  baselinePercentage: number;
+  sortOrder: number;
+  isActive: boolean;
+  subcategories: IssueSubcategoryDto[];
+}
+
+export interface IssueCategorizationDto {
+  sessionId: string;
+  categoryId: string;
+  categoryName: string;
+  categorySlug: string;
+  subcategoryId: string;
+  subcategoryName: string;
+  subcategorySlug: string;
+  priorityLevel: IncidentPriorityLevel;
+  operationalImpact: string;
+  source: CategorizationSource;
+  confidence: number;
+  rationale: string;
+  categorizedByName: string | null;
+  categorizedAt: string;
+}
+
+/** One row of the "most received issues" report. */
+export interface IssueReportRowDto {
+  categoryId: string;
+  categoryName: string;
+  subcategoryId: string;
+  subcategoryName: string;
+  priorityLevel: IncidentPriorityLevel;
+  /** Categorized sessions in the period. */
+  count: number;
+  percentage: number;
+  /** Historical share from the baseline analysis, for comparison. */
+  baselineCount: number;
+  baselinePercentage: number;
+}
+
+export interface IssueCategoryReportRowDto {
+  categoryId: string;
+  categoryName: string;
+  count: number;
+  percentage: number;
+  baselineCount: number;
+  baselinePercentage: number;
+}
+
+export interface IssueReportDto {
+  from: string | null;
+  to: string | null;
+  totalCategorized: number;
+  bySubcategory: IssueReportRowDto[];
+  byCategory: IssueCategoryReportRowDto[];
 }
 
 export interface EscalationDto {

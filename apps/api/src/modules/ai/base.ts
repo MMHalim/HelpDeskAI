@@ -14,10 +14,12 @@ import {
   type AiRequest,
   type AiProviderResult,
   type AiUsage,
+  type CategorizeIssueInput,
   type ClassifyIssueInput,
   type DetectEscalationInput,
   type DetectResolutionInput,
   type HealthCheckResult,
+  type IssueCategorizationResult,
   type IssueClassification,
   type MessageAnalysisResult,
   type ProviderConfig,
@@ -29,6 +31,7 @@ import {
 } from './types.js';
 import {
   buildSystemPrompt,
+  categorizationPrompt,
   classificationPrompt,
   imageAnalysisPrompt,
   messageAnalysisPrompt,
@@ -324,6 +327,31 @@ export abstract class BaseAIProvider implements AIProvider {
         ? (urgencyRaw as IssueClassification['urgency'])
         : 'normal',
       confidence: Math.max(0, Math.min(1, num(parsed?.confidence, 0.5))),
+    };
+  }
+
+  async categorizeIssue(input: CategorizeIssueInput): Promise<IssueCategorizationResult> {
+    if (input.choices.length === 0) {
+      return { subcategoryId: '', confidence: 0, rationale: 'No taxonomy is configured.' };
+    }
+    const prompt = categorizationPrompt(input);
+    const parsed = await this.jsonCall<Record<string, unknown>>(
+      'categorizeIssue',
+      prompt.system,
+      prompt.user,
+      [],
+      512,
+    );
+
+    // Only ids from the taxonomy are accepted, so a hallucinated category can
+    // never reach the database.
+    const subcategoryId = text(parsed?.subcategoryId);
+    const known = input.choices.some((choice) => choice.id === subcategoryId);
+
+    return {
+      subcategoryId: known ? subcategoryId : '',
+      confidence: known ? Math.max(0, Math.min(1, num(parsed?.confidence, 0))) : 0,
+      rationale: known ? text(parsed?.rationale) : 'The model returned an unknown sub-category.',
     };
   }
 

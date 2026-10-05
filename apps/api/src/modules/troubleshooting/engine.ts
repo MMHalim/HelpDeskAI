@@ -56,7 +56,13 @@ import type { SlackFileObject } from '../slack/types.js';
 import { AiRunner } from '../ai/runner.js';
 import { getActiveInstructions } from '../ai/config-service.js';
 import { guardMessage, slackSafeErrorMessage } from '../ai/guard.js';
-import type { AiImage, ScreenshotAnalysisResult, TroubleshootingOption } from '../ai/types.js';
+import type {
+  AiImage,
+  KnowledgeArticleContext,
+  ScreenshotAnalysisResult,
+  TroubleshootingOption,
+} from '../ai/types.js';
+import { listSubcategoryOptions, tryUpsertCategorization } from '../categorization/service.js';
 import { getArticleContexts, getReferenceImages } from '../knowledge/articles.js';
 import { retrieveArticles } from '../knowledge/search.js';
 import {
@@ -722,6 +728,23 @@ async function runTurn(input: TurnInput): Promise<EngineResult> {
 
     if (resolutionDetected) {
       await resolveSession({ session, actor: 'ai', correlationId, state: nextState });
+
+      // 13. File the resolved issue under a reportable category (§32). The
+      //     reply is already posted, so this must never block or fail the turn.
+      void categorizeResolvedIssue({
+        runner,
+        correlationId,
+        session,
+        agentMessage: input.agentMessage,
+        transcript,
+        articles,
+        state: nextState,
+      }).catch((error: unknown) => {
+        log.warn(
+          { category: 'categorization', error: errorMessage(error), correlationId },
+          'Issue categorization failed',
+        );
+      });
     } else if (escalationDetected) {
       await createEscalation({
         session,
@@ -988,6 +1011,73 @@ async function buildTranscript(channelId: string, threadTs: string, sessionId: s
 
   const transcript = parts.join('\n');
   return transcript.length > THREAD_MAX_CHARS ? transcript.slice(-THREAD_MAX_CHARS) : transcript;
+}
+
+/**
+ * Files a freshly resolved session under a reportable category (§32).
+ *
+ * Runs after the Slack reply is already posted, so it is deliberately
+ * best-effort: a failed or empty categorization leaves the session uncategorised
+ * for an administrator to file later.
+ */
+async function categorizeResolvedIssue(input: {
+  runner: AiRunner;
+  correlationId: string;
+  session: Session;
+  agentMessage: string;
+  transcript: string;
+  articles: KnowledgeArticleContext[];
+  state: TroubleshootingState;
+}): Promise<void> {
+  const choices = await listSubcategoryOptions();
+  if (choices.length === 0) return;
+
+  const result = await input.runner
+    .run('categorizeIssue', (provider) =>
+      provider.categorizeIssue({
+        issueTitle: input.state.issue || input.session.issueTitle,
+        issueSummary: input.state.diagnosis || input.session.issueSummary,
+        diagnosis: input.state.diagnosis,
+        agentMessage: input.agentMessage,
+        threadTranscript: input.transcript.slice(-2500),
+        articlesUsed: input.articles.map((article) => article.title),
+        choices: choices.map((choice) => ({
+          id: choice.id,
+          name: choice.name,
+          categoryName: choice.categoryName,
+          priorityLevel: choice.priorityLevel,
+          description: '',
+        })),
+      }),
+    )
+    .then((outcome) => outcome.result);
+
+  if (!result.subcategoryId) {
+    log.info(
+      { category: 'categorization', sessionId: input.session.id, correlationId: input.correlationId },
+      'No confident sub-category for the resolved issue',
+    );
+    return;
+  }
+
+  await tryUpsertCategorization({
+    sessionId: input.session.id,
+    subcategoryId: result.subcategoryId,
+    source: 'ai',
+    confidence: result.confidence,
+    rationale: result.rationale,
+  });
+
+  log.info(
+    {
+      category: 'categorization',
+      sessionId: input.session.id,
+      subcategoryId: result.subcategoryId,
+      confidence: result.confidence,
+      correlationId: input.correlationId,
+    },
+    'Resolved issue categorized',
+  );
 }
 
 async function detectResolution(input: {

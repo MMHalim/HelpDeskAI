@@ -59,6 +59,9 @@ function priorityBoost(priority: Article['priority']): number {
   }
 }
 
+/** Ranking bonus when the article's category matches the classified one. */
+const CATEGORY_MATCH_BOOST = 0.25;
+
 /**
  * Scores articles with `ts_rank` on the weighted search vector, then blends in
  * exact keyword/tag matches and the article priority.
@@ -72,7 +75,6 @@ export async function retrieveArticles(query: RetrievalQuery): Promise<Retrieval
 
   const conditions: SQL[] = [];
   if (!query.includeInactive) conditions.push(eq(troubleshootingArticles.isActive, true));
-  if (query.category) conditions.push(eq(troubleshootingArticles.category, query.category));
 
   if (terms.length === 0) {
     const rows = await db
@@ -150,7 +152,11 @@ export async function retrieveArticles(query: RetrievalQuery): Promise<Retrieval
         row.keywordHits * 0.6 +
         row.tagHits * 0.4 +
         Math.min(row.symptomHits, 4) * 0.2 +
-        priorityBoost(row.article.priority);
+        priorityBoost(row.article.priority) +
+        // A category match only ranks an article higher: it must never exclude
+        // it, because the classifier often files an issue under a neighbouring
+        // category ("Software" vs "Network") while the text matches exactly.
+        (query.category && row.article.category === query.category ? CATEGORY_MATCH_BOOST : 0);
       return { ...row.article, searchScore: Number(score.toFixed(4)), matchedTerms };
     })
     .filter((article) => article.searchScore > 0.05)

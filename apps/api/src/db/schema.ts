@@ -80,6 +80,8 @@ export const documentStatusEnum = pgEnum('document_status', [
 export const aiProviderEnum = pgEnum('ai_provider', ['gemini', 'openai']);
 export const aiProviderRoleEnum = pgEnum('ai_provider_role', ['primary', 'fallback', 'disabled']);
 export const escalationStatusEnum = pgEnum('escalation_status', ['open', 'acknowledged', 'closed']);
+export const incidentPriorityEnum = pgEnum('incident_priority', ['critical', 'high', 'medium', 'low']);
+export const categorizationSourceEnum = pgEnum('categorization_source', ['ai', 'manual']);
 export const processedEventStatusEnum = pgEnum('processed_event_status', [
   'processing',
   'processed',
@@ -297,6 +299,10 @@ export const troubleshootingArticles = pgTable(
     tags: text('tags').array().notNull().default(sql`ARRAY[]::text[]`),
     keywords: text('keywords').array().notNull().default(sql`ARRAY[]::text[]`),
     priority: articlePriorityEnum('priority').notNull().default('normal'),
+    /** Taxonomy link used for incident reporting; does not affect retrieval. */
+    subcategoryId: uuid('subcategory_id').references(() => issueSubcategories.id, {
+      onDelete: 'set null',
+    }),
     isActive: boolean('is_active').notNull().default(true),
     notes: text('notes').notNull().default(''),
     version: integer('version').notNull().default(1),
@@ -516,6 +522,106 @@ export const escalations = pgTable(
     index('escalations_session_id_idx').on(t.sessionId),
     index('escalations_status_idx').on(t.status),
     index('escalations_created_at_idx').on(t.createdAt),
+  ],
+);
+
+/* -------------------------------------------------------------------------- */
+/* Incident taxonomy and categorization                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Macro categories for resolved incidents ("Internet Issues", "CRM Issues").
+ *
+ * Deliberately separate from `troubleshooting_articles.category`, which drives
+ * knowledge-base retrieval: an article is filed under whatever category helps
+ * the AI find it, while a resolved incident is reported under the operational
+ * taxonomy the support organisation counts on.
+ */
+export const issueCategories = pgTable(
+  'issue_categories',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: varchar('name', { length: 120 }).notNull(),
+    slug: varchar('slug', { length: 140 }).notNull(),
+    description: text('description').notNull().default(''),
+    /** Historical incident count, kept only as a reporting baseline. */
+    baselineIncidentCount: integer('baseline_incident_count').notNull().default(0),
+    baselinePercentage: doublePrecision('baseline_percentage').notNull().default(0),
+    sortOrder: integer('sort_order').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('issue_categories_slug_key').on(t.slug),
+    uniqueIndex('issue_categories_name_key').on(t.name),
+    index('issue_categories_sort_order_idx').on(t.sortOrder),
+  ],
+);
+
+/**
+ * Specific sub-categories ("Message Delivery Failures"), each carrying the
+ * operational priority and queue impact used for reporting.
+ */
+export const issueSubcategories = pgTable(
+  'issue_subcategories',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    categoryId: uuid('category_id')
+      .notNull()
+      .references(() => issueCategories.id, { onDelete: 'cascade' }),
+    name: varchar('name', { length: 160 }).notNull(),
+    slug: varchar('slug', { length: 180 }).notNull(),
+    description: text('description').notNull().default(''),
+    /** Queue impact when this sub-category is hit. */
+    priorityLevel: incidentPriorityEnum('priority_level').notNull().default('medium'),
+    operationalImpact: text('operational_impact').notNull().default(''),
+    /** Historical incident count, kept only as a reporting baseline. */
+    baselineIncidentCount: integer('baseline_incident_count').notNull().default(0),
+    baselinePercentage: doublePrecision('baseline_percentage').notNull().default(0),
+    sortOrder: integer('sort_order').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('issue_subcategories_slug_key').on(t.slug),
+    uniqueIndex('issue_subcategories_category_name_key').on(t.categoryId, t.name),
+    index('issue_subcategories_category_idx').on(t.categoryId),
+    index('issue_subcategories_priority_idx').on(t.priorityLevel),
+  ],
+);
+
+/**
+ * The category a resolved issue was filed under, written once the agent
+ * confirms resolution (§32). One row per session; a manual override replaces
+ * the AI choice and flips `source` to "manual".
+ */
+export const issueCategorizations = pgTable(
+  'issue_categorizations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    sessionId: uuid('session_id')
+      .notNull()
+      .references(() => troubleshootingSessions.id, { onDelete: 'cascade' }),
+    categoryId: uuid('category_id')
+      .notNull()
+      .references(() => issueCategories.id, { onDelete: 'restrict' }),
+    subcategoryId: uuid('subcategory_id')
+      .notNull()
+      .references(() => issueSubcategories.id, { onDelete: 'restrict' }),
+    source: categorizationSourceEnum('source').notNull().default('ai'),
+    confidence: doublePrecision('confidence').notNull().default(0),
+    rationale: text('rationale').notNull().default(''),
+    categorizedBy: uuid('categorized_by').references(() => users.id, { onDelete: 'set null' }),
+    categorizedAt: timestamp('categorized_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('issue_categorizations_session_key').on(t.sessionId),
+    index('issue_categorizations_category_idx').on(t.categoryId),
+    index('issue_categorizations_subcategory_idx').on(t.subcategoryId),
+    index('issue_categorizations_categorized_at_idx').on(t.categorizedAt),
   ],
 );
 
