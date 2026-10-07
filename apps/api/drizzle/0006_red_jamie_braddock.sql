@@ -19,6 +19,7 @@ CREATE TABLE "roles" (
 --> statement-breakpoint
 ALTER TABLE "troubleshooting_sessions" ALTER COLUMN "state" SET DEFAULT '{"issue":"","diagnosis":"","stepsCompleted":[],"stepsFailed":[],"currentStep":"","observations":[],"possibleCauses":[],"resolutionStatus":"in_progress","escalationRequired":false,"kbTotalSteps":0,"kbStepsCompleted":0,"kbLastArticleTitle":""}'::jsonb;--> statement-breakpoint
 ALTER TABLE "users" ALTER COLUMN "role" SET DATA TYPE varchar(64) USING "role"::text;--> statement-breakpoint
+ALTER TABLE "users" ALTER COLUMN "role" SET DEFAULT 'viewer';--> statement-breakpoint
 ALTER TABLE "role_permissions" ADD CONSTRAINT "role_permissions_role_id_roles_id_fk" FOREIGN KEY ("role_id") REFERENCES "public"."roles"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "role_permissions_role_id_idx" ON "role_permissions" USING btree ("role_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "roles_key_key" ON "roles" USING btree ("key");--> statement-breakpoint
