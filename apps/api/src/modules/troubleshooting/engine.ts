@@ -1503,11 +1503,6 @@ async function createEscalation(input: {
     metadata: { requiredInfo: config.escalationInfoItems },
   });
 
-  // Notify the configured IT contacts in the same thread, best effort (§5).
-  if (config.escalationNotifyUserIds.length > 0) {
-    const mentions = config.escalationNotifyUserIds.map((id) => `<@${id}>`).join(' ');
-
-  }
 
   log.warn(
     {
