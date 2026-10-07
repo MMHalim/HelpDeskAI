@@ -7,7 +7,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { idParamSchema, issueReportQuerySchema, updateCategorizationSchema } from '@helpdesk/shared';
-import { requireAdmin, requireUser } from '../plugins/auth.js';
+import { requireFeature } from '../plugins/auth.js';
 import { parse } from './helpers.js';
 import {
   getCategorization,
@@ -18,24 +18,24 @@ import {
 
 export async function categorizationRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/categorization/taxonomy', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'issue-categories');
     return { categories: await listTaxonomy() };
   });
 
   app.get('/api/categorization/report', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'issue-categories');
     const query = parse(issueReportQuerySchema, request.query);
     return getIssueReport(query);
   });
 
   app.get('/api/categorization/sessions/:id', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'issue-categories');
     const { id } = parse(idParamSchema, request.params);
     return { categorization: await getCategorization(id) };
   });
 
   app.patch('/api/categorization/sessions/:id', async (request) => {
-    const user = await requireAdmin(request);
+    const user = await requireFeature(request, 'issue-categories.manage');
     const { id } = parse(idParamSchema, request.params);
     const body = parse(updateCategorizationSchema, request.body);
     return {

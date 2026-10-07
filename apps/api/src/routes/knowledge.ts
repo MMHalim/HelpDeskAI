@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { articleInputSchema, articleQuerySchema, articleUpdateSchema, idParamSchema } from '@helpdesk/shared';
 import { AppError } from '../lib/errors.js';
-import { requireAdmin, requireUser } from '../plugins/auth.js';
+import { requireFeature } from '../plugins/auth.js';
 import { parse } from './helpers.js';
 import {
   attachImage,
@@ -57,18 +57,18 @@ export async function knowledgeRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/articles', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'articles');
     const query = parse(articleQuerySchema, request.query);
     return listArticles(query);
   });
 
   app.get('/api/articles/categories', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'articles');
     return { categories: await listCategories() };
   });
 
   app.get('/api/articles/:id', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'articles');
     const { id } = parse(idParamSchema, request.params);
     const article = await getArticle(id);
     if (!article) throw AppError.notFound('Article');
@@ -76,28 +76,28 @@ export async function knowledgeRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/api/articles', async (request, reply) => {
-    const user = await requireAdmin(request);
+    const user = await requireFeature(request, 'articles.manage');
     const input = parse(articleInputSchema, request.body);
     const article = await createArticle(input, user);
     return reply.status(201).send({ article });
   });
 
   app.patch('/api/articles/:id', async (request) => {
-    const user = await requireAdmin(request);
+    const user = await requireFeature(request, 'articles.manage');
     const { id } = parse(idParamSchema, request.params);
     const input = parse(articleUpdateSchema, request.body);
     return { article: await updateArticle(id, input, user) };
   });
 
   app.delete('/api/articles/:id', async (request) => {
-    const user = await requireAdmin(request);
+    const user = await requireFeature(request, 'articles.manage');
     const { id } = parse(idParamSchema, request.params);
     await deleteArticle(id, user);
     return { ok: true };
   });
 
   app.post('/api/articles/:id/images', async (request, reply) => {
-    await requireAdmin(request);
+    await requireFeature(request, 'articles.manage');
     const { id } = parse(idParamSchema, request.params);
     await getArticle(id).then((article) => {
       if (!article) throw AppError.notFound('Article');
@@ -125,24 +125,24 @@ export async function knowledgeRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.delete('/api/articles/images/:imageId', async (request) => {
-    await requireAdmin(request);
+    await requireFeature(request, 'articles.manage');
     const { imageId } = request.params as { imageId: string };
     await deleteArticleImage(imageId);
     return { ok: true };
   });
 
   app.get('/api/knowledge/stats', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'articles');
     return knowledgeBaseStats();
   });
 
   app.get('/api/documents', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'articles');
     return { documents: await listDocuments() };
   });
 
   app.get('/api/documents/:id', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'articles');
     const { id } = parse(idParamSchema, request.params);
     const document = await getDocument(id);
     if (!document) throw AppError.notFound('Document');
@@ -150,7 +150,7 @@ export async function knowledgeRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/api/documents', async (request, reply) => {
-    const user = await requireAdmin(request);
+    const user = await requireFeature(request, 'articles.manage');
     const file = await request.file();
     if (!file) throw AppError.validation('A document file is required');
     const buffer = await file.toBuffer();
@@ -173,13 +173,13 @@ export async function knowledgeRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/api/documents/:id/reparse', async (request) => {
-    const user = await requireAdmin(request);
+    const user = await requireFeature(request, 'articles.manage');
     const { id } = parse(idParamSchema, request.params);
     return reparseDocument(id, user);
   });
 
   app.delete('/api/documents/:id', async (request) => {
-    const user = await requireAdmin(request);
+    const user = await requireFeature(request, 'articles.manage');
     const { id } = parse(idParamSchema, request.params);
     await deleteDocument(id, user);
     return { ok: true };

@@ -3,15 +3,18 @@ import { loginSchema } from '@helpdesk/shared';
 import { env } from '../env.js';
 import { parse } from './helpers.js';
 import { requireUser } from '../plugins/auth.js';
+import { featuresForRole } from '../modules/roles/service.js';
 import { login, logout, SESSION_COOKIE } from '../modules/auth/service.js';
 import type { User } from '../db/schema.js';
 
-function publicUser(user: User) {
+async function publicUser(user: User) {
   return {
     id: user.id,
+    authUserId: user.authUserId,
     email: user.email,
     name: user.name,
     role: user.role,
+    features: await featuresForRole(user.role),
     isActive: user.isActive,
     lastLoginAt: user.lastLoginAt?.toISOString() ?? null,
     createdAt: user.createdAt.toISOString(),
@@ -34,7 +37,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       expires: result.expiresAt,
     });
 
-    return { user: publicUser(result.user) };
+    return { user: await publicUser(result.user) };
   });
 
   app.post('/api/auth/logout', async (request, reply) => {
@@ -45,6 +48,6 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/auth/me', async (request) => {
     const user = await requireUser(request);
-    return { user: publicUser(user) };
+    return { user: await publicUser(user) };
   });
 }

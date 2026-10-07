@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { EscalationStatus } from '@helpdesk/shared';
 import { analyticsQuerySchema, logQuerySchema } from '@helpdesk/shared';
-import { requireAdmin, requireUser } from '../plugins/auth.js';
+import { requireAdmin, requireFeature } from '../plugins/auth.js';
 import { parse } from './helpers.js';
 import { getDashboardStats, listEscalations } from '../modules/troubleshooting/queries.js';
 import { deleteLogsOlderThan, logCategories, queryLogs } from '../modules/logging/service.js';
@@ -9,19 +9,19 @@ import { queryAudit } from '../modules/audit/service.js';
 
 export async function analyticsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/analytics', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'dashboard');
     const { days } = parse(analyticsQuerySchema, request.query);
     return { stats: await getDashboardStats(days) };
   });
 
   app.get('/api/analytics/overview', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'dashboard');
     const { days } = parse(analyticsQuerySchema, request.query);
     return { stats: await getDashboardStats(days) };
   });
 
   app.get('/api/analytics/escalations', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'escalations');
     const query = request.query as Record<string, string | undefined>;
     const page = Number(query.page ?? 1);
     const pageSize = Number(query.pageSize ?? 20);
@@ -33,18 +33,18 @@ export async function analyticsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/analytics/logs', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'logs');
     const query = parse(logQuerySchema, request.query);
     return queryLogs(query);
   });
 
   app.get('/api/analytics/logs/categories', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'issue-categories');
     return { categories: await logCategories() };
   });
 
   app.delete('/api/analytics/logs', async (request) => {
-    await requireAdmin(request);
+    await requireFeature(request, 'logs.clear');
     const days = Number((request.query as Record<string, string | undefined>).days ?? 30);
     const deleted = await deleteLogsOlderThan(Number.isFinite(days) && days > 0 ? days : 30);
     return { deleted };

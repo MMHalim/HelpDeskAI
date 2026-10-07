@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { logger } from '../lib/logger.js';
+import { seedRolesPermissions } from '../modules/roles/service.js';
 import { closeDatabase, db } from './client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,6 +29,7 @@ export async function runMigrations(): Promise<void> {
   const folder = findMigrationsFolder(__dirname);
   logger.info({ folder }, 'Applying database migrations');
   await migrate(db, { migrationsFolder: folder });
+  await seedRolesPermissions();
   logger.info('Database migrations applied');
 }
 

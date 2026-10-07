@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { aiInstructionsInputSchema, aiProviderUpdateSchema } from '@helpdesk/shared';
-import { requireAdmin, requireUser } from '../plugins/auth.js';
+import { requireAdmin, requireFeature } from '../plugins/auth.js';
 import { parse } from './helpers.js';
 import {
   deleteProviderKey,
@@ -13,12 +13,12 @@ import {
 
 export async function aiRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/ai/providers', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'ai');
     return { providers: await listProviderDtos() };
   });
 
   app.get('/api/ai/providers/health', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'ai');
     return { providers: await getProviderHealth() };
   });
 
@@ -36,7 +36,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/ai/instructions', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'ai');
     return { instructions: await getInstructionsDto() };
   });
 

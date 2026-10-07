@@ -14,6 +14,7 @@ import { LogsPage } from './pages/LogsPage';
 import { AiSettingsPage } from './pages/AiSettingsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { UsersPage } from './pages/UsersPage';
+import { RolesPage } from './pages/RolesPage';
 
 function ProtectedRoutes() {
   const { user, isLoading } = useAuth();
@@ -34,9 +35,9 @@ function ProtectedRoutes() {
   return <AppLayout />;
 }
 
-function AdminOnly({ children }: { children: React.ReactNode }) {
-  const { isAdmin } = useAuth();
-  if (!isAdmin) return <Navigate to="/" replace />;
+function FeatureGate({ feature, children }: { feature: string; children: React.ReactNode }) {
+  const { can } = useAuth();
+  if (!can(feature)) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
 
@@ -46,37 +47,108 @@ export function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route element={<ProtectedRoutes />}>
-          <Route index element={<DashboardPage />} />
-          <Route path="sessions" element={<SessionsPage />} />
-          <Route path="sessions/:id" element={<SessionDetailPage />} />
-          <Route path="escalations" element={<EscalationsPage />} />
-          <Route path="issue-categories" element={<IssueReportPage />} />
-          <Route path="articles" element={<ArticlesPage />} />
+          <Route
+            index
+            element={
+              <FeatureGate feature="dashboard">
+                <DashboardPage />
+              </FeatureGate>
+            }
+          />
+          <Route
+            path="sessions"
+            element={
+              <FeatureGate feature="sessions">
+                <SessionsPage />
+              </FeatureGate>
+            }
+          />
+          <Route
+            path="sessions/:id"
+            element={
+              <FeatureGate feature="sessions">
+                <SessionDetailPage />
+              </FeatureGate>
+            }
+          />
+          <Route
+            path="escalations"
+            element={
+              <FeatureGate feature="escalations">
+                <EscalationsPage />
+              </FeatureGate>
+            }
+          />
+          <Route
+            path="issue-categories"
+            element={
+              <FeatureGate feature="issue-categories">
+                <IssueReportPage />
+              </FeatureGate>
+            }
+          />
+          <Route
+            path="articles"
+            element={
+              <FeatureGate feature="articles">
+                <ArticlesPage />
+              </FeatureGate>
+            }
+          />
           <Route
             path="articles/new"
             element={
-              <AdminOnly>
+              <FeatureGate feature="articles.manage">
                 <ArticleEditorPage />
-              </AdminOnly>
+              </FeatureGate>
             }
           />
           <Route
             path="articles/:id"
             element={
-              <AdminOnly>
+              <FeatureGate feature="articles.manage">
                 <ArticleEditorPage />
-              </AdminOnly>
+              </FeatureGate>
             }
           />
-          <Route path="ai" element={<AiSettingsPage />} />
-          <Route path="logs" element={<LogsPage />} />
-          <Route path="settings" element={<SettingsPage />} />
+          <Route
+            path="ai"
+            element={
+              <FeatureGate feature="ai">
+                <AiSettingsPage />
+              </FeatureGate>
+            }
+          />
+          <Route
+            path="logs"
+            element={
+              <FeatureGate feature="logs">
+                <LogsPage />
+              </FeatureGate>
+            }
+          />
+          <Route
+            path="settings"
+            element={
+              <FeatureGate feature="settings">
+                <SettingsPage />
+              </FeatureGate>
+            }
+          />
           <Route
             path="users"
             element={
-              <AdminOnly>
+              <FeatureGate feature="users">
                 <UsersPage />
-              </AdminOnly>
+              </FeatureGate>
+            }
+          />
+          <Route
+            path="roles"
+            element={
+              <FeatureGate feature="roles">
+                <RolesPage />
+              </FeatureGate>
             }
           />
           <Route path="*" element={<Navigate to="/" replace />} />

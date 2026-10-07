@@ -35,9 +35,27 @@ export interface UserDto {
   email: string;
   name: string;
   role: UserRole;
+  /** Permission keys the current user's role grants (computed server-side). */
+  features: string[];
   isActive: boolean;
   lastLoginAt: string | null;
   createdAt: string;
+}
+
+export interface RolePermissionDto {
+  featureKey: string;
+  enabled: boolean;
+}
+
+export interface RoleDto {
+  id: string;
+  key: string;
+  label: string;
+  description: string | null;
+  isSystem: boolean;
+  userCount: number;
+  createdAt: string;
+  permissions: RolePermissionDto[];
 }
 
 export interface ArticleImageDto {

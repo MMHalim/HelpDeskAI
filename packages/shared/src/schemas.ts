@@ -274,7 +274,7 @@ export const createUserSchema = z.object({
   email: z.string().email(),
   name: z.string().min(2).max(120),
   password: z.string().min(12, 'Use at least 12 characters').max(200),
-  role: z.enum(['admin', 'viewer']).default('viewer'),
+  role: z.string().min(1).max(64).default('viewer'),
 });
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 
@@ -283,6 +283,36 @@ export const linkSupabaseAuthSchema = z.object({
   password: z.string().min(12, 'Use at least 12 characters').max(200),
 });
 export type LinkSupabaseAuthInput = z.infer<typeof linkSupabaseAuthSchema>;
+/* -------------------------------------------------------------------------- */
+/* Roles and role permissions                                                  */
+/* -------------------------------------------------------------------------- */
+
+export const createRoleSchema = z.object({
+  key: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[a-z0-9][a-z0-9_.-]*$/, 'Use lowercase letters, numbers, dots, dashes or underscores'),
+  label: z.string().min(1).max(120),
+  description: z.string().max(500).optional(),
+});
+export type CreateRoleInput = z.infer<typeof createRoleSchema>;
+
+export const updateRoleSchema = z.object({
+  label: z.string().min(1).max(120).optional(),
+  description: z.string().max(500).nullable().optional(),
+});
+export type UpdateRoleInput = z.infer<typeof updateRoleSchema>;
+
+export const setRolePermissionsSchema = z.object({
+  permissions: z.array(
+    z.object({
+      featureKey: z.string().min(1).max(64),
+      enabled: z.boolean(),
+    }),
+  ),
+});
+export type SetRolePermissionsInput = z.infer<typeof setRolePermissionsSchema>;
 
 /* -------------------------------------------------------------------------- */
 /* Generic API helpers                                                         */

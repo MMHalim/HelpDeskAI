@@ -96,8 +96,9 @@ export type CategorizationSource = (typeof CATEGORIZATION_SOURCES)[number];
 export const ESCALATION_STATUSES = ['open', 'acknowledged', 'closed'] as const;
 export type EscalationStatus = (typeof ESCALATION_STATUSES)[number];
 
+/** Roles are rows in the `roles` table, so any slug is valid. */
 export const USER_ROLES = ['admin', 'viewer'] as const;
-export type UserRole = (typeof USER_ROLES)[number];
+export type UserRole = string;
 
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error', 'fatal'] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];

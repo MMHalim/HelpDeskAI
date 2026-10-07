@@ -13,6 +13,7 @@ import {
   index,
   integer,
   jsonb,
+  primaryKey,
   pgEnum,
   pgSchema,
   pgTable,
@@ -35,7 +36,6 @@ const tsvector = customType<{ data: string; driverData: string }>({
 /* Enums                                                                       */
 /* -------------------------------------------------------------------------- */
 
-export const userRoleEnum = pgEnum('user_role', ['admin', 'viewer']);
 export const sessionStatusEnum = pgEnum('session_status', [
   'in_progress',
   'assigned',
@@ -120,7 +120,7 @@ export const users = pgTable(
     email: varchar('email', { length: 320 }).notNull(),
     name: varchar('name', { length: 120 }).notNull(),
     passwordHash: text('password_hash'),
-    role: userRoleEnum('role').notNull().default('viewer'),
+    role: varchar('role', { length: 64 }).notNull().default('viewer'),
     isActive: boolean('is_active').notNull().default(true),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -134,6 +134,38 @@ export const users = pgTable(
       columns: [t.authUserId],
       foreignColumns: [authUsers.id],
     }).onDelete('set null'),
+  ],
+);
+
+export const roles = pgTable(
+  'roles',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Stable slug stored on `users.role`, e.g. `admin`, `viewer`, `it`. */
+    key: varchar('key', { length: 64 }).notNull().unique(),
+    label: varchar('label', { length: 120 }).notNull(),
+    description: text('description'),
+    /** System roles (`admin`, `viewer`) cannot be renamed or deleted here. */
+    isSystem: boolean('is_system').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('roles_key_key').on(t.key)],
+);
+
+export const rolePermissions = pgTable(
+  'role_permissions',
+  {
+    roleId: uuid('role_id')
+      .notNull()
+      .references(() => roles.id, { onDelete: 'cascade' }),
+    featureKey: varchar('feature_key', { length: 64 }).notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: 'role_permissions_pkey', columns: [t.roleId, t.featureKey] }),
+    index('role_permissions_role_id_idx').on(t.roleId),
   ],
 );
 

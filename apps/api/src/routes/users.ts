@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { createUserSchema, idParamSchema, linkSupabaseAuthSchema } from '@helpdesk/shared';
 import { AppError } from '../lib/errors.js';
-import { requireAdmin } from '../plugins/auth.js';
+import { requireAdmin, requireFeature } from '../plugins/auth.js';
 import { parse } from './helpers.js';
 import {
   countAdmins,
@@ -15,20 +15,22 @@ import { recordAudit } from '../modules/audit/service.js';
 
 const updateUserSchema = z.object({
   name: z.string().min(2).max(120).optional(),
-  role: z.enum(['admin', 'viewer']).optional(),
+  role: z.string().min(1).max(64).optional(),
   isActive: z.boolean().optional(),
   password: z.string().min(12).max(200).optional(),
 });
 
 export async function userRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/users', async (request) => {
-    await requireAdmin(request);
+    await requireFeature(request, 'users');
     return { users: await listUsers() };
   });
 
   app.post('/api/users', async (request, reply) => {
-    const actor = await requireAdmin(request);
+    const actor = await requireFeature(request, 'users.manage');
     const input = parse(createUserSchema, request.body);
+    // Only an administrator may create other administrators.
+    if (input.role === 'admin') await requireAdmin(request);
     // One request provisions the Supabase Auth identity (auto-confirmed) and
     // the console row that points at it.
     const user = await createUser(input);
@@ -37,7 +39,7 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/api/users/:id/supabase-auth', async (request) => {
-    const actor = await requireAdmin(request);
+    const actor = await requireFeature(request, 'users.manage');
     const { id } = parse(idParamSchema, request.params);
     const { password } = parse(linkSupabaseAuthSchema, request.body);
     // Linking revokes that account's sessions, so whoever performs it — the
@@ -54,9 +56,11 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.patch('/api/users/:id', async (request) => {
-    const actor = await requireAdmin(request);
+    const actor = await requireFeature(request, 'users.manage');
     const { id } = parse(idParamSchema, request.params);
     const patch = parse(updateUserSchema, request.body);
+    // Only an administrator may grant (or strip) administrator privileges.
+    if (patch.role === 'admin') await requireAdmin(request);
 
     if ((patch.role === 'viewer' || patch.isActive === false) && (await countAdmins()) <= 1) {
       const target = (await listUsers()).find((user) => user.id === id);

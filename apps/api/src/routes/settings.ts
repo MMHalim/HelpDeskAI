@@ -5,7 +5,7 @@ import type { SlackConfigDto, SystemSettingsDto } from '@helpdesk/shared';
 import { db } from '../db/client.js';
 import { slackChannels, troubleshootingSessions } from '../db/schema.js';
 import { env } from '../env.js';
-import { requireAdmin, requireUser } from '../plugins/auth.js';
+import { requireAdmin, requireFeature } from '../plugins/auth.js';
 import { listSlackUsers } from '../modules/slack/service.js';
 import { parse } from './helpers.js';
 import {
@@ -82,7 +82,7 @@ async function buildSlackDto(): Promise<SlackConfigDto> {
 
 export async function settingsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/settings', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'settings');
     const [troubleshooting, ai, slack] = await Promise.all([
       getTroubleshootingConfig(),
       getAiDefaults(),
@@ -118,14 +118,14 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/settings/flags', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'settings');
     return { flags: await getSystemFlags() };
   });
 
   // Workspace members, so the escalation technician field can offer real
   // handles/IDs instead of asking an admin to hunt for a Slack user ID.
   app.get('/api/slack/users', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'settings');
     return { users: await listSlackUsers() };
   });
 

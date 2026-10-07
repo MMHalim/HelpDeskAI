@@ -9,26 +9,31 @@ import {
   MessagesSquare,
   Settings,
   ShieldAlert,
+  Shield,
   Users,
+  type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '../auth';
 import { cn } from '../lib/utils';
 
-const NAV_ITEMS = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: '/sessions', label: 'Sessions', icon: MessagesSquare },
-  { to: '/escalations', label: 'Escalations', icon: ShieldAlert },
-  { to: '/issue-categories', label: 'Issue Categories', icon: BarChart3 },
-  { to: '/articles', label: 'Knowledge Base', icon: BookOpen },
-  { to: '/ai', label: 'AI Providers', icon: Bot },
-  { to: '/logs', label: 'Logs', icon: Activity },
-  { to: '/settings', label: 'Settings', icon: Settings },
-  { to: '/users', label: 'Users', icon: Users },
+const NAV_ITEMS: { to: string; label: string; icon: LucideIcon; feature: string; end?: boolean }[] = [
+  { to: '/', label: 'Dashboard', icon: LayoutDashboard, feature: 'dashboard', end: true },
+  { to: '/sessions', label: 'Sessions', icon: MessagesSquare, feature: 'sessions' },
+  { to: '/escalations', label: 'Escalations', icon: ShieldAlert, feature: 'escalations' },
+  { to: '/issue-categories', label: 'Issue Categories', icon: BarChart3, feature: 'issue-categories' },
+  { to: '/articles', label: 'Knowledge Base', icon: BookOpen, feature: 'articles' },
+  { to: '/ai', label: 'AI Providers', icon: Bot, feature: 'ai' },
+  { to: '/logs', label: 'Logs', icon: Activity, feature: 'logs' },
+  { to: '/settings', label: 'Settings', icon: Settings, feature: 'settings' },
+  { to: '/users', label: 'Users', icon: Users, feature: 'users' },
+  { to: '/roles', label: 'Roles', icon: Shield, feature: 'roles' },
 ];
 
 export function AppLayout() {
-  const { user, logout } = useAuth();
+  const { user, can, logout } = useAuth();
   const navigate = useNavigate();
+
+  const visibleItems = NAV_ITEMS.filter((item) => can(item.feature));
 
   const handleLogout = async (): Promise<void> => {
     await logout();
@@ -48,7 +53,7 @@ export function AppLayout() {
           </div>
         </div>
         <nav className="flex-1 space-y-1 p-3">
-          {NAV_ITEMS.map((item) => (
+          {visibleItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -71,9 +76,9 @@ export function AppLayout() {
           <div className="mb-2 px-2">
             <p className="truncate text-sm font-medium text-slate-200">{user?.name}</p>
             <p className="truncate text-xs text-slate-500">{user?.email}</p>
-            {user?.role === 'admin' ? (
+            {user ? (
               <span className="mt-1 inline-block rounded bg-indigo-600/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-300">
-                admin
+                {user.role}
               </span>
             ) : null}
           </div>

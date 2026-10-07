@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, UserCog } from 'lucide-react';
-import type { UserDto } from '@helpdesk/shared';
+import type { RoleDto, UserDto } from '@helpdesk/shared';
 import { api, ApiError } from '../lib/api';
 import { Badge, Button, Card, EmptyState, Field, Input, Modal, Select, Spinner, Toggle } from '../components/ui';
 import { cn, formatDateTime } from '../lib/utils';
@@ -10,7 +10,7 @@ interface CreateForm {
   email: string;
   name: string;
   password: string;
-  role: 'admin' | 'viewer';
+  role: string;
 }
 
 interface LinkForm {
@@ -49,6 +49,12 @@ export function UsersPage() {
     queryKey: ['users'],
     queryFn: () => api.get<{ users: UserDto[] }>('/api/users'),
   });
+
+  const rolesQuery = useQuery({
+    queryKey: ['roles'],
+    queryFn: () => api.get<{ roles: RoleDto[] }>('/api/roles'),
+  });
+  const roles = rolesQuery.data?.roles ?? [];
 
   const createMutation = useMutation({
     mutationFn: () => api.post('/api/users', form),
@@ -158,10 +164,13 @@ export function UsersPage() {
                       <Select
                         value={user.role}
                         onChange={(event) => updateMutation.mutate({ id: user.id, patch: { role: event.target.value } })}
-                        className="h-8 w-28 text-xs"
+                        className="h-8 w-32 text-xs"
                       >
-                        <option value="admin">Admin</option>
-                        <option value="viewer">Viewer</option>
+                        {roles.map((role) => (
+                          <option key={role.id} value={role.key}>
+                            {role.label}
+                          </option>
+                        ))}
                       </Select>
                     </td>
                     <td className="px-5 py-3">
@@ -222,9 +231,12 @@ export function UsersPage() {
           </Field>
           <PasswordField value={form.password} onChange={(password) => setForm({ ...form, password })} />
           <Field label="Role">
-            <Select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as 'admin' | 'viewer' })}>
-              <option value="viewer">Viewer</option>
-              <option value="admin">Administrator</option>
+            <Select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>
+              {roles.map((role) => (
+                <option key={role.id} value={role.key}>
+                  {role.label}
+                </option>
+              ))}
             </Select>
           </Field>
           <p className="rounded-lg border border-slate-700/60 bg-slate-800/40 px-3 py-2 text-xs text-slate-400">

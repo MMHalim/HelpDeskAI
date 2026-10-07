@@ -7,6 +7,8 @@ interface AuthContextValue {
   user: UserDto | null;
   isLoading: boolean;
   isAdmin: boolean;
+  features: string[];
+  can: (featureKey: string) => boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -45,15 +47,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     queryClient.clear();
   }, [queryClient]);
 
+  const can = useCallback(
+    (featureKey: string) => (data?.role === 'admin' ? true : (data?.features.includes(featureKey) ?? false)),
+    [data],
+  );
+
   const value = useMemo<AuthContextValue>(
     () => ({
       user: data ?? null,
       isLoading,
       isAdmin: data?.role === 'admin',
+      features: data?.features ?? [],
+      can,
       login,
       logout,
     }),
-    [data, isLoading, login, logout],
+    [data, isLoading, can, login, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

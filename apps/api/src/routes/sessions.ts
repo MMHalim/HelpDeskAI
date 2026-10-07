@@ -5,7 +5,7 @@ import { db } from '../db/client.js';
 import { escalations, troubleshootingSessions } from '../db/schema.js';
 import { AppError } from '../lib/errors.js';
 import { correlationId as newCorrelationId } from '../lib/ids.js';
-import { requireAdmin, requireUser } from '../plugins/auth.js';
+import { requireFeature } from '../plugins/auth.js';
 import {
   addAdminNote,
   resolveSession,
@@ -20,13 +20,13 @@ import { parse } from './helpers.js';
 
 export async function sessionRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/sessions', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'sessions');
     const query = parse(sessionQuerySchema, request.query);
     return listSessions(query);
   });
 
   app.get('/api/sessions/:id', async (request) => {
-    await requireUser(request);
+    await requireFeature(request, 'sessions');
     const { id } = parse(idParamSchema, request.params);
     const session = await getSessionDetail(id);
     if (!session) throw AppError.notFound('Session');
@@ -34,7 +34,7 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/api/sessions/:id/actions', async (request) => {
-    const user = await requireAdmin(request);
+    const user = await requireFeature(request, 'sessions.manage');
     const { id } = parse(idParamSchema, request.params);
     const action = parse(adminSessionActionSchema, request.body);
     const session = await findSession(id);
