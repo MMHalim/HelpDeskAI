@@ -17,7 +17,8 @@ const PRIORITY_STYLES: Record<string, string> = {
 };
 
 export function ArticlesPage() {
-  const { isAdmin } = useAuth();
+  const { can } = useAuth();
+  const canManage = can('articles.manage');
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
@@ -50,7 +51,7 @@ export function ArticlesPage() {
           <h1 className="text-xl font-semibold text-slate-100">Knowledge Base</h1>
           <p className="text-sm text-slate-400">Reference articles the AI can retrieve during troubleshooting</p>
         </div>
-        {isAdmin ? (
+        {canManage ? (
           <Link to="/articles/new">
             <Button>
               <Plus className="h-4 w-4" /> New article
@@ -109,7 +110,7 @@ export function ArticlesPage() {
         ) : !data || data.items.length === 0 ? (
           <EmptyState
             title="No articles found"
-            description={isAdmin ? 'Create your first article to seed the knowledge base.' : undefined}
+            description={canManage ? 'Create your first article to seed the knowledge base.' : undefined}
           />
         ) : (
           <>

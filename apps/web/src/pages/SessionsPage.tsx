@@ -11,7 +11,8 @@ import { useAuth } from '../auth';
 import { cn, humanize, relativeTime, sessionStatusClass } from '../lib/utils';
 
 export function SessionsPage() {
-  const { isAdmin } = useAuth();
+  const { can } = useAuth();
+  const canManage = can('sessions.manage');
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState('');
   const [search, setSearch] = useState('');
@@ -92,7 +93,7 @@ export function SessionsPage() {
                     <th className="px-5 py-3 font-medium">Attempts</th>
                     <th className="px-5 py-3 font-medium">1st response</th>
                     <th className="px-5 py-3 font-medium">Last activity</th>
-                    {isAdmin ? <th className="px-5 py-3 text-right font-medium">Actions</th> : null}
+                    {canManage ? <th className="px-5 py-3 text-right font-medium">Actions</th> : null}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--color-line)]">
@@ -112,7 +113,7 @@ export function SessionsPage() {
                       <td className="px-5 py-3 text-slate-400">{session.attemptCount}</td>
                       <td className="px-5 py-3 text-slate-400">{relativeTime(session.firstResponseAt)}</td>
                       <td className="px-5 py-3 text-slate-400">{relativeTime(session.lastActivityAt)}</td>
-                      {isAdmin ? (
+                      {canManage ? (
                         <td className="px-5 py-3 text-right">
                           <Button size="sm" variant="ghost" onClick={() => setStatusTarget(session)}>
                             <Tag className="h-3.5 w-3.5" /> Status

@@ -18,7 +18,8 @@ const LEVEL_STYLES: Record<string, string> = {
 };
 
 export function LogsPage() {
-  const { isAdmin } = useAuth();
+  const { can } = useAuth();
+  const canClear = can('logs.clear');
   const [page, setPage] = useState(1);
   const [level, setLevel] = useState('');
   const [category, setCategory] = useState('');
@@ -51,7 +52,7 @@ export function LogsPage() {
           <h1 className="text-xl font-semibold text-slate-100">Logs</h1>
           <p className="text-sm text-slate-400">Structured application and integration logs</p>
         </div>
-        {isAdmin ? (
+        {canClear ? (
           <Button variant="secondary" size="sm" onClick={() => void purge()}>
             <Trash2 className="h-3.5 w-3.5" /> Purge &gt; 30 days
           </Button>

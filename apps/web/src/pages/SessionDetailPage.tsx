@@ -42,7 +42,9 @@ interface ActionBody {
 
 export function SessionDetailPage() {
   const { id = '' } = useParams();
-  const { isAdmin } = useAuth();
+  const { can } = useAuth();
+  const canManage = can('sessions.manage');
+  const canCategorize = can('issue-categories.manage');
   const queryClient = useQueryClient();
   const [noteOpen, setNoteOpen] = useState(false);
   const [note, setNote] = useState('');
@@ -111,7 +113,7 @@ export function SessionDetailPage() {
           </div>
         </div>
 
-        {isAdmin ? (
+        {canManage ? (
           <div className="flex flex-wrap gap-2">
             <Button size="sm" onClick={() => setStatusOpen(true)}>
               <Tag className="h-3.5 w-3.5" /> Change status
@@ -259,7 +261,7 @@ export function SessionDetailPage() {
                   {formatDateTime(session.categorization.categorizedAt)}
                 </p>
 
-                {isAdmin ? (
+                {canCategorize ? (
                   <CategorizationEditor sessionId={id} currentSubcategoryId={session.categorization.subcategoryId} />
                 ) : null}
               </div>
@@ -271,7 +273,7 @@ export function SessionDetailPage() {
                 <p className="text-slate-400">
                   This issue was resolved without being categorized, so it is missing from the reports.
                 </p>
-                {isAdmin ? <CategorizationEditor sessionId={id} currentSubcategoryId="" /> : null}
+                {canCategorize ? <CategorizationEditor sessionId={id} currentSubcategoryId="" /> : null}
               </div>
             </Card>
           ) : null}

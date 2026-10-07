@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, UserCog } from 'lucide-react';
 import type { RoleDto, UserDto } from '@helpdesk/shared';
 import { api, ApiError } from '../lib/api';
+import { useAuth } from '../auth';
 import { Badge, Button, Card, EmptyState, Field, Input, Modal, Select, Spinner, Toggle } from '../components/ui';
 import { cn, formatDateTime } from '../lib/utils';
 
@@ -40,6 +41,8 @@ function PasswordField({
 
 export function UsersPage() {
   const queryClient = useQueryClient();
+  const { can } = useAuth();
+  const canManage = can('users.manage');
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState<CreateForm>({ email: '', name: '', password: '', role: 'viewer' });
   const [link, setLink] = useState<LinkForm | null>(null);
@@ -97,9 +100,11 @@ export function UsersPage() {
             to the console automatically.
           </p>
         </div>
-        <Button onClick={() => setModalOpen(true)}>
-          <Plus className="h-4 w-4" /> New user
-        </Button>
+        {canManage ? (
+          <Button onClick={() => setModalOpen(true)}>
+            <Plus className="h-4 w-4" /> New user
+          </Button>
+        ) : null}
       </div>
 
       {pendingLinks.length > 0 ? (
@@ -150,7 +155,7 @@ export function UsersPage() {
                     <td className="px-5 py-3">
                       {user.authUserId ? (
                         <Badge className="border-emerald-500/30 bg-emerald-500/15 text-emerald-300">linked</Badge>
-                      ) : (
+                      ) : canManage ? (
                         <Button
                           size="sm"
                           variant="ghost"
@@ -158,27 +163,35 @@ export function UsersPage() {
                         >
                           Move to Supabase
                         </Button>
+                      ) : (
+                        <span className="text-xs text-slate-500">local</span>
                       )}
                     </td>
                     <td className="px-5 py-3">
-                      <Select
-                        value={user.role}
-                        onChange={(event) => updateMutation.mutate({ id: user.id, patch: { role: event.target.value } })}
-                        className="h-8 w-32 text-xs"
-                      >
-                        {roles.map((role) => (
-                          <option key={role.id} value={role.key}>
-                            {role.label}
-                          </option>
-                        ))}
-                      </Select>
+                      {canManage ? (
+                        <Select
+                          value={user.role}
+                          onChange={(event) => updateMutation.mutate({ id: user.id, patch: { role: event.target.value } })}
+                          className="h-8 w-32 text-xs"
+                        >
+                          {roles.map((role) => (
+                            <option key={role.id} value={role.key}>
+                              {role.label}
+                            </option>
+                          ))}
+                        </Select>
+                      ) : (
+                        <span className="text-xs text-slate-300">{user.role}</span>
+                      )}
                     </td>
                     <td className="px-5 py-3">
                       <div className="flex items-center gap-2">
-                        <Toggle
-                          checked={user.isActive}
-                          onChange={(next) => updateMutation.mutate({ id: user.id, patch: { isActive: next } })}
-                        />
+                        {canManage ? (
+                          <Toggle
+                            checked={user.isActive}
+                            onChange={(next) => updateMutation.mutate({ id: user.id, patch: { isActive: next } })}
+                          />
+                        ) : null}
                         <Badge
                           className={cn(
                             user.isActive
