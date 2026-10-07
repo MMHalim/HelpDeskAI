@@ -75,8 +75,8 @@ export interface TroubleshootingConfig {
   kbMaxArticles: number;
   kbMaxSteps: number;
   escalationContact: string | null;
-  itTechnicianUserId?: string | null;
-  escalationCcGroup?: string | null;
+  itTechnicianUserId: string | null;
+  escalationCcGroup: string | null;
   escalationSlaHours: number;
   escalationNotifyUserIds: string[];
 }
@@ -310,9 +310,18 @@ export async function updateTroubleshootingConfig(
   input: TroubleshootingSettingsInput,
   user: Pick<User, 'id' | 'email'> | null,
 ): Promise<TroubleshootingConfig> {
+  const current = await getTroubleshootingConfig();
   const next: TroubleshootingConfig = {
-    ...(await getTroubleshootingConfig()),
+    ...current,
     ...input,
+    // `nullish()` inputs arrive as `undefined` when omitted, so treat an absent
+    // key as "leave as is" and an explicit `null` as "clear".
+    itTechnicianUserId: Object.hasOwn(input, 'itTechnicianUserId')
+      ? (input.itTechnicianUserId ?? null)
+      : current.itTechnicianUserId,
+    escalationCcGroup: Object.hasOwn(input, 'escalationCcGroup')
+      ? (input.escalationCcGroup ?? null)
+      : current.escalationCcGroup,
   };
   await writeRow(TROUBLESHOOTING_KEY, next, {
     userId: user?.id ?? null,

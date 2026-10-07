@@ -549,6 +549,9 @@ export interface SystemSettingsDto {
     kbMaxSteps: number;
     escalationContact: string | null;
     escalationNotifyUserIds: string[];
+    itTechnicianUserId: string | null;
+    escalationCcGroup: string | null;
+    escalationSlaHours: number;
   };
   ai: {
     primaryProvider: AiProviderId | null;

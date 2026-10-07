@@ -47,6 +47,7 @@ import {
   getAgentIdentity,
   getPermalink,
   postMessage,
+  listSlackUsers,
   addReaction,
   upsertSlackMessage,
 } from '../slack/service.js';
@@ -646,7 +647,7 @@ async function runTurn(input: TurnInput): Promise<EngineResult> {
     // 11. Guard the reply before it reaches Slack (§19, §23).
     let replyText = generated.reply;
     if (resolutionDetected) replyText = RESOLVED_SLACK_MESSAGE;
-    if (escalationDetected && !resolutionDetected) replyText = buildEscalationReply(generated.escalationReason ?? escalation.reason, config, session);
+    if (escalationDetected && !resolutionDetected) replyText = await buildEscalationReply(generated.escalationReason ?? escalation.reason, config, session);
     const guard = guardMessage(replyText);
 
     // Always greet the person who wrote the message (§5).
@@ -1211,27 +1212,70 @@ function buildReplyBlocks(text: string, options: TroubleshootingOption[]): unkno
   ];
 }
 
-function buildEscalationReply(
+/**
+ * Turns whatever the admin typed into a mention Slack can actually deliver.
+ *
+ * Accepts a raw user ID (`U01…`), a handle (`@mostafa.salah`) or a display /
+ * real name (`Mostafa Salah`). Anything that cannot be matched is passed
+ * through unchanged so the text still reads sensibly.
+ */
+async function resolveUserMention(raw: string): Promise<string> {
+  const value = raw.trim();
+  if (!value) return '';
+  if (value.startsWith('<@') || value.startsWith('<!')) return value;
+
+  const bare = value.replace(/^@/, '').trim();
+  if (!bare) return '';
+
+  // A raw Slack ID is already unambiguous.
+  if (/^[UW][A-Z0-9]{8,}$/i.test(bare)) return `<@${bare}>`;
+
+  try {
+    const users = await listSlackUsers();
+    const needle = bare.toLowerCase();
+    const exact =
+      users.find((user) => user.handle.toLowerCase() === `@${needle}`) ??
+      users.find((user) => user.handle.slice(1).toLowerCase() === needle) ??
+      users.find((user) => user.name.toLowerCase() === needle);
+    if (exact) return `<@${exact.id}>`;
+    const partial = users.filter((user) => user.name.toLowerCase().startsWith(needle));
+    const only = partial.length === 1 ? partial[0] : undefined;
+    if (only) return `<@${only.id}>`;
+    if (partial.length > 1) {
+      log.warn(
+        { category: 'slack', value, candidates: partial.map((user) => user.name) },
+        'Escalation contact is ambiguous; using the raw text',
+      );
+    } else {
+      log.warn({ category: 'slack', value }, 'Escalation contact did not match a Slack user');
+    }
+  } catch (error) {
+    log.warn({ category: 'slack', error: errorMessage(error) }, 'Could not resolve Slack user');
+  }
+  // Fall back to a handle: `postMessage` sends `link_names`, so Slack may still
+  // turn `@handle` into a real mention.
+  return bare.startsWith('@') ? bare : `@${bare}`;
+}
+
+async function buildEscalationReply(
   reason: string,
   config: { escalationInfoItems: string[]; escalationContact: string | null; itTechnicianUserId?: string | null; escalationCcGroup?: string | null; escalationSlaHours?: number },
   session: Session,
-): string {
+): Promise<string> {
   const tech = config.itTechnicianUserId?.trim() || config.escalationContact?.trim() || '';
-  let technicianMention = 'IT';
-  if (tech) {
-    if (tech.startsWith('<@') || tech.startsWith('<!subteam') || tech.startsWith('@')) {
-      technicianMention = tech.startsWith('@') ? tech : tech;
-    } else if (/^U[A-Z0-9]{8,}$/i.test(tech) || /^W[A-Z0-9]{8,}$/i.test(tech)) {
-      technicianMention = `<@${tech}>`;
-    } else {
-      technicianMention = tech.replace(/^@/, '') ? `@${tech.replace(/^@/, '')}` : tech;
-    }
-  }
+  const technicianMention = tech ? await resolveUserMention(tech) : 'IT';
   const ccRaw = config.escalationCcGroup?.trim();
   let cc = '';
   if (ccRaw) {
-    cc = ccRaw.startsWith('CC:') ? ccRaw : ` CC: ${ccRaw}`;
-    // ensure Slack mentions are preserved as-is
+    if (ccRaw.startsWith('CC:')) {
+      cc = ccRaw;
+    } else if (ccRaw.startsWith('<')) {
+      // Already a Slack token (`<!subteam^S…>`), pass it straight through.
+      cc = ` CC: ${ccRaw}`;
+    } else {
+      // A bare handle: `link_names` rewrites it into `<!subteam^S…>` on send.
+      cc = ` CC: @${ccRaw.replace(/^@/, '')}`;
+    }
   }
   const ticket = session.sessionCode ? `#${session.sessionCode}` : 'this ticket';
   const summary = session.issueTitle || session.issueSummary || 'Not specified';

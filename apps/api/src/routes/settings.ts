@@ -6,6 +6,7 @@ import { db } from '../db/client.js';
 import { slackChannels, troubleshootingSessions } from '../db/schema.js';
 import { env } from '../env.js';
 import { requireAdmin, requireUser } from '../plugins/auth.js';
+import { listSlackUsers } from '../modules/slack/service.js';
 import { parse } from './helpers.js';
 import {
   getAiDefaults,
@@ -119,6 +120,13 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/settings/flags', async (request) => {
     await requireUser(request);
     return { flags: await getSystemFlags() };
+  });
+
+  // Workspace members, so the escalation technician field can offer real
+  // handles/IDs instead of asking an admin to hunt for a Slack user ID.
+  app.get('/api/slack/users', async (request) => {
+    await requireUser(request);
+    return { users: await listSlackUsers() };
   });
 
   app.put('/api/settings/flags', async (request) => {

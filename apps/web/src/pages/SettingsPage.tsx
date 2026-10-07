@@ -2,6 +2,12 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Save, Trash2 } from 'lucide-react';
 import type { SystemSettingsDto } from '@helpdesk/shared';
+
+interface SlackUserOption {
+  id: string;
+  handle: string;
+  name: string;
+}
 import { api, ApiError } from '../lib/api';
 import { Badge, Button, Card, CardHeader, Field, Input, Spinner, Textarea, Toggle } from '../components/ui';
 import { useAuth } from '../auth';
@@ -57,6 +63,12 @@ export function SettingsPage() {
     queryFn: () => api.get<{ settings: SystemSettingsDto }>('/api/settings'),
   });
 
+  const { data: slackUsers } = useQuery({
+    queryKey: ['slack-users'],
+    queryFn: () => api.get<{ users: SlackUserOption[] }>('/api/slack/users'),
+    staleTime: 5 * 60 * 1000,
+  });
+
   useEffect(() => {
     if (!data?.settings) return;
     const settings = data.settings;
@@ -86,9 +98,9 @@ export function SettingsPage() {
       kbMaxSteps: settings.troubleshooting.kbMaxSteps,
       escalationContact: settings.troubleshooting.escalationContact ?? '',
       escalationNotifyUserIds: settings.troubleshooting.escalationNotifyUserIds.join(', '),
-      itTechnicianUserId: (settings.troubleshooting as any).itTechnicianUserId ?? '',
-      escalationCcGroup: (settings.troubleshooting as any).escalationCcGroup ?? '',
-      escalationSlaHours: (settings.troubleshooting as any).escalationSlaHours ?? 24,
+      itTechnicianUserId: settings.troubleshooting.itTechnicianUserId ?? '',
+      escalationCcGroup: settings.troubleshooting.escalationCcGroup ?? '',
+      escalationSlaHours: settings.troubleshooting.escalationSlaHours ?? 24,
     });
   }, [data]);
 
@@ -129,9 +141,9 @@ export function SettingsPage() {
         kbMaxSteps: troubleshooting?.kbMaxSteps,
         escalationContact: troubleshooting?.escalationContact || undefined,
         escalationNotifyUserIds: split(troubleshooting?.escalationNotifyUserIds ?? ''),
-        itTechnicianUserId: (troubleshooting as any)?.itTechnicianUserId || undefined,
-        escalationCcGroup: (troubleshooting as any)?.escalationCcGroup || undefined,
-        escalationSlaHours: Number((troubleshooting as any)?.escalationSlaHours ?? 24),
+        itTechnicianUserId: troubleshooting?.itTechnicianUserId || null,
+        escalationCcGroup: troubleshooting?.escalationCcGroup || null,
+        escalationSlaHours: Number(troubleshooting?.escalationSlaHours ?? 24),
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['settings'] });
@@ -141,6 +153,18 @@ export function SettingsPage() {
     },
     onError: (err) => setError(err instanceof ApiError ? err.message : 'Unable to save troubleshooting settings'),
   });
+
+  const memberList = slackUsers?.users ?? [];
+  const techValue = troubleshooting?.itTechnicianUserId.trim() ?? '';
+  const techMatches = memberList.some(
+    (user) =>
+      user.id.toLowerCase() === techValue.toLowerCase() ||
+      user.handle.toLowerCase() === techValue.toLowerCase() ||
+      user.name.toLowerCase() === techValue.replace(/^@/, '').toLowerCase(),
+  );
+  const techLooksLikeChannelId = /^D[A-Z0-9]{8,}$/i.test(techValue);
+  const techUnresolved =
+    Boolean(techValue) && memberList.length > 0 && !techMatches && !/^U[W]?[A-Z0-9]{8,}$/i.test(techValue);
 
   if (isLoading || !data || !slack || !troubleshooting) {
     return (
@@ -412,21 +436,44 @@ export function SettingsPage() {
                   disabled={!isAdmin}
                 />
               </Field>
-              <Field label="IT Technician Slack user ID">
+              <Field label="IT technician (the person escalated tickets are assigned to)">
                 <Input
+                  list="slack-member-options"
                   value={troubleshooting.itTechnicianUserId}
                   onChange={(event) => updateTroubleshooting({ itTechnicianUserId: event.target.value })}
-                  placeholder="e.g. U012AB3CD"
+                  placeholder="e.g. @mostafa.salah or U012AB3CD"
                   disabled={!isAdmin}
                 />
+                <datalist id="slack-member-options">
+                  {memberList.map((user) => (
+                    <option key={user.id} value={user.handle}>
+                      {user.name} — {user.id}
+                    </option>
+                  ))}
+                </datalist>
+                {techValue && techLooksLikeChannelId ? (
+                  <p className="mt-1 text-xs text-rose-600">
+                    That looks like a DM/channel ID, not a user. Pick the person from the list instead.
+                  </p>
+                ) : techUnresolved ? (
+                  <p className="mt-1 text-xs text-rose-600">
+                    No Slack member matches this — it will post as plain text instead of notifying anyone.
+                  </p>
+                ) : techValue && techMatches ? (
+                  <p className="mt-1 text-xs text-emerald-600">Matches a workspace member.</p>
+                ) : null}
               </Field>
-              <Field label="Escalation CC group (Slack subteam mention)">
+              <Field label="Escalation CC group (Slack user group handle)">
                 <Input
                   value={troubleshooting.escalationCcGroup}
                   onChange={(event) => updateTroubleshooting({ escalationCcGroup: event.target.value })}
-                  placeholder="e.g. <!subteam^S0123|@it-team>"
+                  placeholder="e.g. @it-report"
                   disabled={!isAdmin}
                 />
+                <p className="mt-1 text-xs text-slate-500">
+                  Slack rewrites this into a real group mention when the escalation is posted, so everyone in
+                  the group is notified. Leave empty to skip the CC.
+                </p>
               </Field>
               <Field label="Escalation SLA (hours)">
                 <Input
@@ -438,17 +485,9 @@ export function SettingsPage() {
                   disabled={!isAdmin}
                 />
               </Field>
-              <Field label="Notify & mention Slack user IDs (comma separated)">
-                <Input
-                  value={troubleshooting.escalationNotifyUserIds}
-                  onChange={(event) => updateTroubleshooting({ escalationNotifyUserIds: event.target.value })}
-                  placeholder="e.g. U012AB3CD, U045EF6GH"
-                  disabled={!isAdmin}
-                />
-              </Field>
               <p className="text-xs text-slate-500">
-                When a session escalates (after the max attempts or when the agent asks for a human),
-                these users are @mentioned in the same thread so they can take over.
+                On escalation the bot posts one message in the thread that mentions the IT technician, CCs the
+                group above, and includes the ticket ID, summary and SLA window.
               </p>
             </div>
           </Card>

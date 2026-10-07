@@ -27,6 +27,10 @@ export async function postMessage(input: PostMessageInput): Promise<string> {
     text: input.text,
     unfurl_links: false,
     unfurl_media: false,
+    // Lets Slack rewrite `@handle` / `#channel` text into real mention tokens
+    // (e.g. `@it-report` -> `<!subteam^S…>`), which is what actually notifies
+    // people. Already-formed `<@U…>` tokens are left untouched.
+    link_names: true,
   };
   if (input.threadTs) payload.thread_ts = input.threadTs;
   if (input.blocks && input.blocks.length > 0) payload.blocks = input.blocks;
@@ -290,4 +294,53 @@ export async function listPersistedMessages(
     .where(and(eq(slackMessages.channelId, channelId), eq(slackMessages.threadTs, threadTs)))
     .orderBy(sql`${slackMessages.slackMessageTs}::double precision asc`)
     .limit(limit);
+}
+
+interface SlackUserMember {
+  id: string;
+  name?: string;
+  deleted?: boolean;
+  is_bot?: boolean;
+  is_app_user?: boolean;
+  profile?: { display_name?: string; real_name?: string };
+}
+
+export interface SlackUserOption {
+  id: string;
+  /** `@username` — what an admin can type into a settings field. */
+  handle: string;
+  /** Real / display name shown next to the handle. */
+  name: string;
+}
+
+let userCache: { at: number; users: SlackUserOption[] } | null = null;
+const USER_CACHE_MS = 5 * 60 * 1000;
+
+/** Active workspace members, used to turn a name into a real `<@U…>` mention. */
+export async function listSlackUsers(): Promise<SlackUserOption[]> {
+  if (userCache && Date.now() - userCache.at < USER_CACHE_MS) return userCache.users;
+
+  const result = await slackCall<{ ok: boolean; error?: string; members?: SlackUserMember[] }>(
+    'users.list',
+    { limit: 200 },
+  );
+  if (!result.ok || !Array.isArray(result.members)) {
+    throw new AppError('Slack did not return a user list', {
+      kind: 'slack_api',
+      cause: result.error ?? 'users.list failed',
+    });
+  }
+
+  const users = result.members
+    .filter((member) => !member.deleted && !member.is_bot && !member.is_app_user)
+    .map((member) => ({
+      id: member.id,
+      handle: `@${member.name}`,
+      name:
+        member.profile?.display_name || member.profile?.real_name || member.name || member.id,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  userCache = { at: Date.now(), users };
+  return users;
 }
