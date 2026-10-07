@@ -1217,8 +1217,23 @@ function buildEscalationReply(
   config: { escalationInfoItems: string[]; escalationContact: string | null; itTechnicianUserId?: string | null; escalationCcGroup?: string | null; escalationSlaHours?: number },
   session: Session,
 ): string {
-  const technicianMention = config.itTechnicianUserId ? `<@${config.itTechnicianUserId}>` : (config.escalationContact || 'IT');
-  const cc = config.escalationCcGroup ? ` CC: ${config.escalationCcGroup}` : '';
+  const tech = config.itTechnicianUserId?.trim() || config.escalationContact?.trim() || '';
+  let technicianMention = 'IT';
+  if (tech) {
+    if (tech.startsWith('<@') || tech.startsWith('<!subteam') || tech.startsWith('@')) {
+      technicianMention = tech.startsWith('@') ? tech : tech;
+    } else if (/^U[A-Z0-9]{8,}$/i.test(tech) || /^W[A-Z0-9]{8,}$/i.test(tech)) {
+      technicianMention = `<@${tech}>`;
+    } else {
+      technicianMention = tech.replace(/^@/, '') ? `@${tech.replace(/^@/, '')}` : tech;
+    }
+  }
+  const ccRaw = config.escalationCcGroup?.trim();
+  let cc = '';
+  if (ccRaw) {
+    cc = ccRaw.startsWith('CC:') ? ccRaw : ` CC: ${ccRaw}`;
+    // ensure Slack mentions are preserved as-is
+  }
   const ticket = session.sessionCode ? `#${session.sessionCode}` : 'this ticket';
   const summary = session.issueTitle || session.issueSummary || 'Not specified';
   const sla = config.escalationSlaHours ?? 24;
