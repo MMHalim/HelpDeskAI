@@ -185,6 +185,12 @@ export const troubleshootingSettingsInputSchema = z.object({
   escalationContact: z.string().max(300).optional(),
   /** Slack user IDs pinged on escalation (optional). */
   escalationNotifyUserIds: z.array(z.string().max(64)).max(50).default([]),
+  /** Primary IT technician Slack user ID (for mentions). */
+  itTechnicianUserId: z.string().max(64).optional(),
+  /** Slack group mention to include in CC (e.g. <!subteam^S0123|@it-team>). */
+  escalationCcGroup: z.string().max(100).optional(),
+  /** SLA in hours for IT to resolve escalated tickets. */
+  escalationSlaHours: z.number().int().min(1).max(336).default(24),
 });
 export type TroubleshootingSettingsInput = z.infer<typeof troubleshootingSettingsInputSchema>;
 

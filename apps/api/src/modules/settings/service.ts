@@ -75,6 +75,9 @@ export interface TroubleshootingConfig {
   kbMaxArticles: number;
   kbMaxSteps: number;
   escalationContact: string | null;
+  itTechnicianUserId?: string | null;
+  escalationCcGroup?: string | null;
+  escalationSlaHours: number;
   escalationNotifyUserIds: string[];
 }
 
@@ -288,6 +291,9 @@ export function defaultTroubleshootingConfig(): TroubleshootingConfig {
     kbMaxSteps: env.troubleshooting.kbMaxSteps,
     escalationContact: null,
     escalationNotifyUserIds: [],
+    itTechnicianUserId: null,
+    escalationCcGroup: null,
+    escalationSlaHours: 24,
   };
 }
 

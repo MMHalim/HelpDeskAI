@@ -86,9 +86,9 @@ export function SettingsPage() {
       kbMaxSteps: settings.troubleshooting.kbMaxSteps,
       escalationContact: settings.troubleshooting.escalationContact ?? '',
       escalationNotifyUserIds: settings.troubleshooting.escalationNotifyUserIds.join(', '),
-      itTechnicianUserId: (settings.troubleshooting as any).itTechnicianUserId ?? '',
-      escalationCcGroup: (settings.troubleshooting as any).escalationCcGroup ?? '',
-      escalationSlaHours: (settings.troubleshooting as any).escalationSlaHours ?? 24,
+      itTechnicianUserId: settings.troubleshooting.itTechnicianUserId ?? '',
+      escalationCcGroup: settings.troubleshooting.escalationCcGroup ?? '',
+      escalationSlaHours: settings.troubleshooting.escalationSlaHours ?? 24,
     });
   }, [data]);
 
@@ -129,9 +129,9 @@ export function SettingsPage() {
         kbMaxSteps: troubleshooting?.kbMaxSteps,
         escalationContact: troubleshooting?.escalationContact || undefined,
         escalationNotifyUserIds: split(troubleshooting?.escalationNotifyUserIds ?? ''),
-        itTechnicianUserId: (troubleshooting as any)?.itTechnicianUserId || undefined,
-        escalationCcGroup: (troubleshooting as any)?.escalationCcGroup || undefined,
-        escalationSlaHours: Number((troubleshooting as any)?.escalationSlaHours ?? 24),
+        itTechnicianUserId: troubleshooting?.itTechnicianUserId || undefined,
+        escalationCcGroup: troubleshooting?.escalationCcGroup || undefined,
+        escalationSlaHours: Number(troubleshooting?.escalationSlaHours ?? 24),
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['settings'] });
@@ -409,32 +409,6 @@ export function SettingsPage() {
                   className="font-sans"
                   value={troubleshooting.escalationInfoItems}
                   onChange={(event) => updateTroubleshooting({ escalationInfoItems: event.target.value })}
-                  disabled={!isAdmin}
-                />
-              </Field>
-              <Field label="IT Technician Slack user ID">
-                <Input
-                  value={troubleshooting.itTechnicianUserId}
-                  onChange={(event) => updateTroubleshooting({ itTechnicianUserId: event.target.value })}
-                  placeholder="e.g. U012AB3CD"
-                  disabled={!isAdmin}
-                />
-              </Field>
-              <Field label="Escalation CC group (Slack subteam mention)">
-                <Input
-                  value={troubleshooting.escalationCcGroup}
-                  onChange={(event) => updateTroubleshooting({ escalationCcGroup: event.target.value })}
-                  placeholder="e.g. <!subteam^S0123|@it-team>"
-                  disabled={!isAdmin}
-                />
-              </Field>
-              <Field label="Escalation SLA (hours)">
-                <Input
-                  type="number"
-                  min={1}
-                  max={336}
-                  value={troubleshooting.escalationSlaHours}
-                  onChange={(event) => updateTroubleshooting({ escalationSlaHours: Number(event.target.value) })}
                   disabled={!isAdmin}
                 />
               </Field>
