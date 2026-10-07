@@ -50,7 +50,6 @@ import {
   addReaction,
   upsertSlackMessage,
 } from '../slack/service.js';
-import { slackCall } from '../slack/client.js';
 import { buildGreetingReply, slackMention } from '../slack/greeting.js';
 import type { SlackFileObject } from '../slack/types.js';
 import { AiRunner } from '../ai/runner.js';
