@@ -320,18 +320,27 @@ const USER_CACHE_MS = 5 * 60 * 1000;
 export async function listSlackUsers(): Promise<SlackUserOption[]> {
   if (userCache && Date.now() - userCache.at < USER_CACHE_MS) return userCache.users;
 
-  const result = await slackCall<{ ok: boolean; error?: string; members?: SlackUserMember[] }>(
-    'users.list',
-    { limit: 200 },
-  );
-  if (!result.ok || !Array.isArray(result.members)) {
-    throw new AppError('Slack did not return a user list', {
-      kind: 'slack_api',
-      cause: result.error ?? 'users.list failed',
-    });
+  const members: SlackUserMember[] = [];
+  let cursor = '';
+  for (let page = 0; page < 25; page += 1) {
+    const result = await slackCall<{
+      ok: boolean;
+      error?: string;
+      members?: SlackUserMember[];
+      response_metadata?: { next_cursor?: string };
+    }>('users.list', { limit: 200, cursor });
+    if (!result.ok || !Array.isArray(result.members)) {
+      throw new AppError('Slack did not return a user list', {
+        kind: 'slack_api',
+        cause: result.error ?? 'users.list failed',
+      });
+    }
+    members.push(...result.members);
+    cursor = result.response_metadata?.next_cursor ?? '';
+    if (!cursor) break;
   }
 
-  const users = result.members
+  const users = members
     .filter((member) => !member.deleted && !member.is_bot && !member.is_app_user)
     .map((member) => ({
       id: member.id,
