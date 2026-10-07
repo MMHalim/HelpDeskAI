@@ -22,6 +22,9 @@ export function emptyState(): TroubleshootingState {
     possibleCauses: [],
     resolutionStatus: 'in_progress',
     escalationRequired: false,
+    kbTotalSteps: 0,
+    kbStepsCompleted: 0,
+    kbLastArticleTitle: '',
   };
 }
 
@@ -38,6 +41,9 @@ export function normalizeState(value: unknown): TroubleshootingState {
     possibleCauses: Array.isArray(state.possibleCauses) ? state.possibleCauses : [],
     resolutionStatus: (state.resolutionStatus ?? 'in_progress') as ResolutionStatus,
     escalationRequired: Boolean(state.escalationRequired),
+    kbTotalSteps: Number((state as any).kbTotalSteps) || 0,
+    kbStepsCompleted: Number((state as any).kbStepsCompleted) || 0,
+    kbLastArticleTitle: String((state as any).kbLastArticleTitle || ''),
   };
 }
 

@@ -231,6 +231,12 @@ export const troubleshootingStateSchema = z.object({
   possibleCauses: z.array(z.string()).default([]),
   resolutionStatus: z.enum(['in_progress', 'resolved', 'escalated', 'abandoned']).default('in_progress'),
   escalationRequired: z.boolean().default(false),
+  /** Total troubleshooting steps in the article(s) we are following. */
+  kbTotalSteps: z.number().int().min(0).max(50).default(0),
+  /** How many KB steps the agent has completed/acknowledged. */
+  kbStepsCompleted: z.number().int().min(0).max(50).default(0),
+  /** Last retrieved KB article title used to count steps. */
+  kbLastArticleTitle: z.string().max(200).default(''),
 });
 export type TroubleshootingState = z.infer<typeof troubleshootingStateSchema>;
 
