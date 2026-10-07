@@ -1506,26 +1506,7 @@ async function createEscalation(input: {
   // Notify the configured IT contacts in the same thread, best effort (§5).
   if (config.escalationNotifyUserIds.length > 0) {
     const mentions = config.escalationNotifyUserIds.map((id) => `<@${id}>`).join(' ');
-    const lines = [
-      `${mentions} :rotating_light: *Escalation ${input.session.sessionCode}* — ${
-        input.session.issueTitle || input.session.sessionCode
-      }`,
-      `Reason: ${input.reason}`,
-      config.escalationContact ? `Contact: ${config.escalationContact}` : '',
-      `Reported by: ${
-        input.session.agentDisplayName || input.session.agentName || input.session.slackUserId
-      }`,
-      'Please take over this thread when you can.',
-    ].filter(Boolean);
-    try {
-      await slackCall('chat.postMessage', {
-        channel: input.session.channelId,
-        text: lines.join('\n'),
-        thread_ts: input.session.threadTs,
-      });
-    } catch (error) {
-      log.warn({ category: 'slack', error }, 'Could not post the escalation notification');
-    }
+
   }
 
   log.warn(
